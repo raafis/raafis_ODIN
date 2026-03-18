@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   odin:
     container_name: odin
@@ -8,21 +6,27 @@ services:
       - "1234:1234"
     depends_on:
       - bor
+
   bor:
     container_name: bor
-    image: aichenskyi/bor:latest
+    build: ../bor
     ports:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
       - HNSWLIB_NO_NATIVE=1
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - LLM_MODEL_NAME=${LLM_MODEL_NAME}
-      - MOCK="False"
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-dolphin3:8b}
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME:-nomic-embed-text}
+      - MOCK=False
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - chroma_data:/etc/chroma
+      - /home/raafisedyaporna/PT-Diorama-Products-Indonesia/odin_trial:/home/raafisedyaporna/PT-Diorama-Products-Indonesia/odin_trial:ro
     depends_on:
       - memgraph
+
   memgraph:
     image: memgraph/memgraph-mage:1.15-memgraph-2.15
     container_name: memgraph
