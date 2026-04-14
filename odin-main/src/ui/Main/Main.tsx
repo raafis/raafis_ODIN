@@ -320,7 +320,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			)}
 			<RadioSelect
 				options={options}
-				defaultSelectedValue="vault"
+				defaultSelectedValue="file"
 				selectedValueOverride={type}
 				onChange={onChangeCallback}
 				disabled={selectedFile.length === 0 || disabled}

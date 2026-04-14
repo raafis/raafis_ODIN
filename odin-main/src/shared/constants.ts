@@ -9,4 +9,4 @@ export const OPERATIONS_MAP: Record<string, { url: string; method: string }> = {
 
 export const OPERATIONS = ["create", "delete", "modify", "rename"];
 
-export const DEFAULT_SELECTION = "vault";
+export const DEFAULT_SELECTION = "file";

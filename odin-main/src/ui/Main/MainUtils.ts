@@ -22,6 +22,8 @@ export const fetchGraphData = async (type: string, root: string, selectedFile: s
             type: "Notes",
             content: "",
         };
+    } else if (type === "file" && !selectedFile) {
+        return { nodes: [], edges: [] };
     }
 
     const nodeList: Node[] = [];

@@ -19,7 +19,8 @@ class TextAnalizer:
         self.model = ChatOllama(
             model=constants.LLM_MODEL_NAME,
             base_url=constants.OLLAMA_BASE_URL,
-            temperature=constants.LLM_MODEL_TEMPERATURE
+            temperature=constants.LLM_MODEL_TEMPERATURE,
+            think=False
         )
 
         self.prompt_names = [
