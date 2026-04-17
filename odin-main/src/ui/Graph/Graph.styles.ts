@@ -33,6 +33,10 @@ export const GraphStyle = [
             "background-color": (node: cytoscape.NodeSingular) =>
                 priorityColors[node.data("priority") as priorityColorsKey],
             "font-size": "16px",
+            "text-wrap": "wrap",
+            "text-max-width": "100px",
+            "text-outline-color": theme.colors.primary,
+            "text-outline-width": "2px",
         },
     },
     {
@@ -47,7 +51,11 @@ export const GraphStyle = [
             "target-arrow-shape": "triangle",
             "curve-style": "bezier",
             "edge-text-rotation": "autorotate",
-            "font-size": "12px",
+            "font-size": "14px",
+            "text-wrap": "wrap",
+            "text-max-width": "120px",
+            "text-outline-color": theme.colors.primary,
+            "text-outline-width": "2px",
         },
     },
     {
@@ -58,6 +66,17 @@ export const GraphStyle = [
             "background-color": theme.colors["accent"],
             "border-width": "2px",
             "border-color": theme.colors["secondary-neutral"],
+            label: "data(fullLabel)",
+            "text-wrap": "wrap",
+            "text-max-width": "150px",
+        },
+    },
+    {
+        selector: "edge:selected",
+        style: {
+            label: "data(fullLabel)",
+            "text-wrap": "wrap",
+            "text-max-width": "150px",
         },
     },
 ]

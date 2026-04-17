@@ -337,7 +337,6 @@ const Main: React.FC = (): React.JSX.Element => {
 					<S.LoadingIcon />
 				</S.LoadingContainer>
 			)}
-			<PromptBar />
 		</S.Container>
 	);
 };

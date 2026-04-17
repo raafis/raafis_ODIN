@@ -21,8 +21,46 @@ class MemgraphManager:
 
     def run_update_query(self: MemgraphManager, query: str) -> None:
         import re
-        # Split multiple statements — LLMs often emit several CREATE/MERGE blocks
-        statements = [s.strip() for s in re.split(r';|\n{2,}', query) if s.strip()]
+        lines = [l.strip() for l in query.splitlines() if l.strip()]
+
+        node_pattern = re.compile(
+            r"MERGE\s+\((\w+)(?::\w+)?\s*\{[^}]*name\s*:\s*['\"]([^'\"]+)['\"]",
+            re.IGNORECASE
+        )
+        rel_pattern = re.compile(r"^MERGE\s+\((\w+)\)\s*-\[", re.IGNORECASE)
+        rel_full = re.compile(r"^MERGE\s+\((\w+)\)(.*?)\((\w+)\)", re.IGNORECASE)
+
+        # Single-pass: process lines in order, tracking the CURRENT name for each
+        # variable as we go. Relationship lines are rewritten using the name that
+        # was active for that variable at that position in the output.
+        current_var_name: dict = {}  # var -> node name currently bound to it
+        statements = []
+
+        for line in lines:
+            # Node MERGE — update the current binding for this variable
+            nm = node_pattern.search(line)
+            if nm:
+                current_var_name[nm.group(1)] = nm.group(2)
+                statements.append(line)
+                continue
+
+            # Relationship MERGE — rewrite using current bindings
+            if rel_pattern.match(line):
+                rm = rel_full.match(line)
+                if rm:
+                    src, mid, dst = rm.group(1), rm.group(2), rm.group(3)
+                    src_name = current_var_name.get(src)
+                    dst_name = current_var_name.get(dst)
+                    if src_name and dst_name:
+                        stmt = (
+                            f"MATCH (a {{name: '{src_name}'}}), (b {{name: '{dst_name}'}}) "
+                            f"MERGE (a){mid}(b)"
+                        )
+                        statements.append(stmt)
+                    continue  # skip malformed rel lines silently
+
+            statements.append(line)
+
         for stmt in statements:
             try:
                 self.db.execute(stmt)

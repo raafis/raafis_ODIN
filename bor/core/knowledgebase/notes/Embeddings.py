@@ -14,7 +14,7 @@ class Embeddings:
         response = httpx.post(
             f"{constants.OLLAMA_BASE_URL}/api/embeddings",
             json={"model": model, "prompt": text},
-            timeout=60.0
+            timeout=300.0
         )
         response.raise_for_status()
         return response.json()["embedding"]

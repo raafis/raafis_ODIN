@@ -7,6 +7,7 @@ from core.knowledgebase.Utils import Utils
 from core.knowledgebase.TextAnalizer import TextAnalizer
 from core.knowledgebase.MemgraphManager import MemgraphManager
 from core.knowledgebase.notes.CollectionManager import CollectionManager
+from core.knowledgebase.indexers.KGIndexer import KGIndexer
 
 
 class VaultManager:
@@ -30,15 +31,21 @@ class VaultManager:
             if not file_text.strip():
                 continue
             i = len(processed)
-            if i == 0:
-                res_queries = self.ta.text_to_cypher_create(
-                    file_text, self.vault_path, file_path)
+            if file_path.endswith("_knowledge_graph.md"):
+                for stmt in KGIndexer.parse(file_text, self.vault_path, file_path):
+                    try:
+                        self.mm.db.execute(stmt)
+                    except Exception as e:
+                        print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
             else:
-                data = self.mm.export_data_for_repo_path(self.vault_path)
-                res_queries = self.ta.data_and_text_to_cypher_update(
-                    str(data), file_text, self.vault_path, file_path)
-
-            self.mm.run_update_query(res_queries)
+                if i == 0:
+                    res_queries = self.ta.text_to_cypher_create(
+                        file_text, self.vault_path, file_path)
+                else:
+                    data = self.mm.export_data_for_repo_path(self.vault_path)
+                    res_queries = self.ta.data_and_text_to_cypher_update(
+                        str(data), file_text, self.vault_path, file_path)
+                self.mm.run_update_query(res_queries)
             # Set repo_path/file_path on any nodes the LLM omitted them from
             try:
                 self.mm.db.execute(

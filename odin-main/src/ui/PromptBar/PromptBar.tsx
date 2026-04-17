@@ -230,7 +230,20 @@ const PromptBar: React.FC<PromptBarProps> = ({
 				</S.PromptDropDownMessages>
 				{chat.length > 0 ? (
 					<S.PromptDropDownInfo>
-						{loading ? <S.LoadingIcon /> : null}
+						{loading ? (
+						<>
+							<S.LoadingIcon />
+							<S.PromptDropDownRegenerateBlock
+								onClick={() => {
+									setLoading(false);
+									setError(false);
+									disabled.current = false;
+								}}
+							>
+								Cancel
+							</S.PromptDropDownRegenerateBlock>
+						</>
+					) : null}
 						{error ? (
 							<>
 								<S.PromptDropDownError>

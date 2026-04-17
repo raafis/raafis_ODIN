@@ -54,8 +54,8 @@ const Graph: React.FC<GraphProps> = ({
 
 	const registerClickHandler = () => {
 		const handleClick = (event: cytoscape.EventObject) => {
-			cyRef.current?.edges().unselectify();
 			if (event.target === cyRef.current) {
+				cyRef.current?.edges().deselect();
 				cyRef.current
 					?.nodes()
 					.filter((node) => node.data().priority === 1)

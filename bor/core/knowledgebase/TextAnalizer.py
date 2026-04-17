@@ -63,17 +63,54 @@ class TextAnalizer:
         return raw.strip()
 
     _CYPHER_SYSTEM = (
-        "You are a knowledge graph builder. Output ONLY a single valid Cypher block. Rules:\n"
-        "1. Use MERGE for every node and relationship.\n"
-        "2. Every node MUST have a 'name' property (a short descriptive string).\n"
-        "3. Every node MUST have 'repo_path' and 'file_path' properties (values provided by the user).\n"
-        "4. Use a UNIQUE variable name for EACH node (e.g. a, b, c, d, ... — never reuse a variable).\n"
-        "5. Write ALL statements in ONE continuous block with NO semicolons between them.\n"
-        "6. Do NOT include RETURN, no explanations, no markdown, no code fences.\n"
-        "Example format:\n"
-        "MERGE (a:Person {name: 'Alice', repo_path: '/vault', file_path: '/vault/note.md'})\n"
-        "MERGE (b:City {name: 'Paris', repo_path: '/vault', file_path: '/vault/note.md'})\n"
-        "MERGE (a)-[:LIVES_IN]->(b)"
+        "Convert the text into a Cypher knowledge graph. Be thorough — extract every meaningful entity, "
+        "concept, role, process, and phenomenon mentioned in the text.\n\n"
+        "NODE LABELS — choose the most specific label:\n"
+        "  Role=person/actor/agent  Concept=abstract idea/phenomenon  Technology=tool/platform/system\n"
+        "  Process=named procedure/workflow  Output=artifact/report produced  Entity=anything else\n\n"
+        "RELATIONSHIP TYPES — use the actual verb or verb phrase from the text, converted to UPPER_SNAKE_CASE. "
+        "Examples: 'occupies' → OCCUPIES, 'exerts' → EXERTS, 'adopt cues from' → ADOPT_CUES_FROM, "
+        "'align their behaviour with' → ALIGN_BEHAVIOUR_WITH, 'embodies' → EMBODIES.\n\n"
+        "RULES:\n"
+        "1. Extract ALL meaningful concepts — people, roles, ideas, behaviours, processes, phenomena.\n"
+        "2. Do NOT create nodes for bare numbers or dates.\n"
+        "3. Relationship labels must be verbs or verb phrases from the text itself.\n"
+        "4. Use MERGE for every node and relationship.\n"
+        "5. Every node MUST have: name, repo_path, file_path.\n"
+        "6. UNIQUE variable per node: a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p.\n"
+        "7. One statement per line. No semicolons. No RETURN. No markdown. No explanations.\n\n"
+        "EXAMPLE (text: 'Node 33 occupies the centre of peer attention and social status. "
+        "She exerts conformity pressure. Actors adopt cues from her as a high status referent. "
+        "Girls align their behaviour with hers.'):\n"
+        "MERGE (a:Role {name: 'Node 33', repo_path: '/v', file_path: '/v/n.md'})\n"
+        "MERGE (b:Concept {name: 'Peer Attention', repo_path: '/v', file_path: '/v/n.md'})\n"
+        "MERGE (c:Concept {name: 'Social Status', repo_path: '/v', file_path: '/v/n.md'})\n"
+        "MERGE (d:Concept {name: 'Conformity Pressure', repo_path: '/v', file_path: '/v/n.md'})\n"
+        "MERGE (e:Concept {name: 'High Status Referent', repo_path: '/v', file_path: '/v/n.md'})\n"
+        "MERGE (f:Role {name: 'Girls', repo_path: '/v', file_path: '/v/n.md'})\n"
+        "MERGE (a)-[:OCCUPIES_CENTRE_OF]->(b)\n"
+        "MERGE (a)-[:OCCUPIES_CENTRE_OF]->(c)\n"
+        "MERGE (a)-[:EXERTS]->(d)\n"
+        "MERGE (a)-[:EMBODIES]->(e)\n"
+        "MERGE (f)-[:ALIGN_BEHAVIOUR_WITH]->(a)"
+    )
+
+    _CYPHER_UPDATE_SYSTEM = (
+        "Extend an existing knowledge graph with new information from the text. "
+        "Be thorough — extract every new entity, concept, role, process, and phenomenon.\n\n"
+        "NODE LABELS — choose the most specific label:\n"
+        "  Role=person/actor  Concept=abstract idea  Technology=tool/system\n"
+        "  Process=named procedure  Output=artifact produced  Entity=anything else\n\n"
+        "RELATIONSHIP TYPES — use the actual verb or verb phrase from the new text, converted to "
+        "UPPER_SNAKE_CASE. The label must be a verb from the text itself.\n\n"
+        "RULES:\n"
+        "1. Extract ALL meaningful concepts not already in the existing graph.\n"
+        "2. Do NOT create nodes for bare numbers or dates.\n"
+        "3. Relationship labels must be verbs or verb phrases from the text.\n"
+        "4. Use MERGE for every node and relationship.\n"
+        "5. Every node MUST have: name, repo_path, file_path.\n"
+        "6. UNIQUE variable per node: a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p.\n"
+        "7. One statement per line. No semicolons. No RETURN. No markdown. No explanations.\n"
     )
 
     def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
@@ -82,19 +119,19 @@ class TextAnalizer:
             HumanMessage(content=(
                 f"repo_path: {repo_path}\n"
                 f"file_path: {file_path}\n\n"
-                f"Convert this text into a Cypher MERGE block:\n{text}"
+                f"Text:\n{text}"
             ))
         ]
         return self._extract_cypher(self.model.invoke(self.messages).content)
 
     def data_and_text_to_cypher_update(self: TextAnalizer, data: str, text: str, repo_path: str, file_path: str) -> str:
         self.messages = [
-            SystemMessage(content=self._CYPHER_SYSTEM),
+            SystemMessage(content=self._CYPHER_UPDATE_SYSTEM),
             HumanMessage(content=(
                 f"repo_path: {repo_path}\n"
                 f"file_path: {file_path}\n\n"
-                f"EXISTING GRAPH DATA:\n{data}\n\n"
-                f"Extend the graph with new MERGE statements for this text:\n{text}"
+                f"Existing graph data:\n{data}\n\n"
+                f"New text to add:\n{text}"
             ))
         ]
         return self._extract_cypher(self.model.invoke(self.messages).content)

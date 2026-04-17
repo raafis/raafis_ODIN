@@ -7,11 +7,11 @@ import shortenWord from "src/util/shortenWord";
 export const fetchGraphData = async (type: string, root: string, selectedFile: string, ignoreResults: boolean, suggested: number[]): Promise<{ nodes: Node[], edges: Edge[] }> => {
     let fetchBody = {};
     const fetchUrl =
-        type === "vault"
+        (type === "vault" || !selectedFile)
             ? "http://localhost:8000/knowledge_base/general/get_all_for_repo"
             : "http://localhost:8000/knowledge_base/notes/get_for_path";
 
-    if (type === "vault") {
+    if (type === "vault" || !selectedFile) {
         fetchBody = {
             path: root,
             type: "Notes",
@@ -22,8 +22,6 @@ export const fetchGraphData = async (type: string, root: string, selectedFile: s
             type: "Notes",
             content: "",
         };
-    } else if (type === "file" && !selectedFile) {
-        return { nodes: [], edges: [] };
     }
 
     const nodeList: Node[] = [];
@@ -46,10 +44,8 @@ export const fetchGraphData = async (type: string, root: string, selectedFile: s
                             nodeList.push({
                                 data: {
                                     id: element.id + "",
-                                    label: shortenWord(
-                                        element.properties.name,
-                                        12
-                                    ),
+                                    label: shortenWord(element.properties.name, 20),
+                                    fullLabel: element.properties.name,
                                     priority: 1,
                                     selected:
                                         (type !== "file" &&
@@ -61,8 +57,9 @@ export const fetchGraphData = async (type: string, root: string, selectedFile: s
                         } else if (element.type === "relationship" && "label" in element) {
                             edgeList.push({
                                 data: {
-                                    id: element.id + "",
-                                    label: shortenWord(element.label, 12),
+                                    id: "e_" + element.id,
+                                    label: shortenWord(element.label, 20),
+                                    fullLabel: element.label,
                                     source: element.start + "",
                                     target: element.end + "",
                                 },
@@ -73,5 +70,7 @@ export const fetchGraphData = async (type: string, root: string, selectedFile: s
             }
         });
 
-    return { nodes: nodeList, edges: edgeList }
+    const nodeIds = new Set(nodeList.map(n => n.data.id));
+    const filteredEdges = edgeList.filter(e => nodeIds.has(e.data.source) && nodeIds.has(e.data.target));
+    return { nodes: nodeList, edges: filteredEdges }
 }

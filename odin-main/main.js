@@ -52479,7 +52479,11 @@ var GraphStyle = [
       width: (node2) => node2.data("priority") * 10 + 10 + "px",
       height: (node2) => node2.data("priority") * 10 + 10 + "px",
       "background-color": (node2) => priorityColors[node2.data("priority")],
-      "font-size": "16px"
+      "font-size": "16px",
+      "text-wrap": "wrap",
+      "text-max-width": "100px",
+      "text-outline-color": "#1E1E1E",
+      "text-outline-width": "2px"
     }
   },
   {
@@ -52493,7 +52497,11 @@ var GraphStyle = [
       "target-arrow-shape": "triangle",
       "curve-style": "bezier",
       "edge-text-rotation": "autorotate",
-      "font-size": "12px"
+      "font-size": "14px",
+      "text-wrap": "wrap",
+      "text-max-width": "120px",
+      "text-outline-color": "#1E1E1E",
+      "text-outline-width": "2px"
     }
   },
   {
@@ -52503,7 +52511,18 @@ var GraphStyle = [
       height: (node2) => "25px",
       "background-color": theme_default.colors["accent"],
       "border-width": "2px",
-      "border-color": theme_default.colors["secondary-neutral"]
+      "border-color": theme_default.colors["secondary-neutral"],
+      label: "data(fullLabel)",
+      "text-wrap": "wrap",
+      "text-max-width": "150px"
+    }
+  },
+  {
+    selector: "edge:selected",
+    style: {
+      label: "data(fullLabel)",
+      "text-wrap": "wrap",
+      "text-max-width": "150px"
     }
   }
 ];
@@ -52571,8 +52590,8 @@ var Graph = ({
     var _a;
     const handleClick = (event) => {
       var _a2, _b, _c;
-      (_a2 = cyRef.current) == null ? void 0 : _a2.edges().unselectify();
       if (event.target === cyRef.current) {
+        (_a2 = cyRef.current) == null ? void 0 : _a2.edges().deselect();
         (_b = cyRef.current) == null ? void 0 : _b.nodes().filter((node2) => node2.data().priority === 1).unselectify();
       } else {
         (_c = cyRef.current) == null ? void 0 : _c.nodes().filter((node2) => node2.data().priority === 1).selectify();
@@ -55104,12 +55123,13 @@ var {
 } = axios_default;
 
 // src/util/fetchData.ts
-var fetchData = async (url, data, method) => {
+var fetchData = async (url, data, method, timeout = 12e4) => {
   try {
     const response = await axios_default({
       method: method || "POST",
       url,
-      data
+      data,
+      timeout
     });
     return response.data;
   } catch (error) {
@@ -55313,7 +55333,10 @@ var PromptBar = ({
             ] }, msg + index);
           }) }),
           chat.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(PromptDropDownInfo, { children: [
-            loading ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(LoadingIcon, {}) : null,
+            loading ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(LoadingIcon, {}),
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(PromptDropDownRegenerateBlock, { onClick: () => { setLoading(false); setError(false); disabled.current = false; }, children: ["Cancel"] })
+            ] }) : null,
             error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(PromptDropDownError, { children: errorMsg }),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
@@ -55541,8 +55564,8 @@ var shortenWord_default = shortenWord;
 // src/ui/Main/MainUtils.ts
 var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) => {
   let fetchBody = {};
-  const fetchUrl = type === "vault" ? "http://localhost:8000/knowledge_base/general/get_all_for_repo" : "http://localhost:8000/knowledge_base/notes/get_for_path";
-  if (type === "vault") {
+  const fetchUrl = (type === "vault" || !selectedFile) ? "http://localhost:8000/knowledge_base/general/get_all_for_repo" : "http://localhost:8000/knowledge_base/notes/get_for_path";
+  if (type === "vault" || !selectedFile) {
     fetchBody = {
       path: root,
       type: "Notes"
@@ -55553,8 +55576,6 @@ var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) 
       type: "Notes",
       content: ""
     };
-  } else if (type === "file" && !selectedFile) {
-    return { nodes: [], edges: [] };
   }
   const nodeList = [];
   const edgeList = [];
@@ -55573,10 +55594,8 @@ var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) 
             nodeList.push({
               data: {
                 id: element.id + "",
-                label: shortenWord_default(
-                  element.properties.name,
-                  12
-                ),
+                label: shortenWord_default(element.properties.name, 20),
+                fullLabel: element.properties.name,
                 priority: 1,
                 selected: type !== "file" && selectedFile === fileName || suggested.contains(element.id),
                 path: fileName
@@ -55585,8 +55604,9 @@ var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) 
           } else if (element.type === "relationship" && "label" in element) {
             edgeList.push({
               data: {
-                id: element.id + "",
-                label: shortenWord_default(element.label, 12),
+                id: "e_" + element.id,
+                label: shortenWord_default(element.label, 20),
+                fullLabel: element.label,
                 source: element.start + "",
                 target: element.end + ""
               }
@@ -55596,7 +55616,9 @@ var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) 
       }
     }
   });
-  return { nodes: nodeList, edges: edgeList };
+  const nodeIds = new Set(nodeList.map((n) => n.data.id));
+  const filteredEdges = edgeList.filter((e) => nodeIds.has(e.data.source) && nodeIds.has(e.data.target));
+  return { nodes: nodeList, edges: filteredEdges };
 };
 
 // src/util/getFilenameFromPath.ts
@@ -55892,8 +55914,7 @@ var Main = () => {
         disabled
       }
     ),
-    graphLoading && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingContainer, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingIcon2, {}) }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(PromptBar_default, {})
+    graphLoading && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingContainer, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingIcon2, {}) })
   ] });
 };
 var Main_default = Main;
