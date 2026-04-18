@@ -7,7 +7,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
 from langchain.schema import (
     HumanMessage,
-    SystemMessage
+    SystemMessage,
+    AIMessage,
 )
 
 from core.knowledgebase import constants
@@ -20,7 +21,14 @@ class TextAnalizer:
             model=constants.LLM_MODEL_NAME,
             base_url=constants.OLLAMA_BASE_URL,
             temperature=constants.LLM_MODEL_TEMPERATURE,
-            think=False
+            think=False,
+            num_predict=512,
+        )
+        self.kg_model = ChatOllama(
+            model=constants.LLM_MODEL_NAME,
+            base_url=constants.OLLAMA_BASE_URL,
+            temperature=0.3,
+            num_predict=1024,
         )
 
         self.prompt_names = [
@@ -48,93 +56,141 @@ class TextAnalizer:
             self.prompts[prompt_name] = prompt_template
         return
 
+    _KG_SYSTEM = (
+        "You are a TEXT ANALYSIS assistant. Do NOT generate code. Do NOT generate prose.\n"
+        "Task: extract a knowledge graph from the passage below.\n"
+        "Output ONLY lines in these two formats — nothing else:\n"
+        "  NODE|Label|Name\n"
+        "  REL|FromName|RELATIONSHIP_TYPE|ToName\n\n"
+        "LABELS — choose the most specific one:\n"
+        "  Technology = software, platform, tool, or system (Discord, Signal, Python, iPhone)\n"
+        "  Role = person, human actor, or named group of people (Napoleon, Law Enforcement, User)\n"
+        "  Concept = abstract idea, phenomenon, or property (Privacy, Encryption, Trust, Democracy)\n"
+        "  Process = named procedure or method (Military Campaign, Court Order, Indexing)\n"
+        "  Output = artifact produced (Report, Document, Law, Policy)\n"
+        "  Entity = anything else that does not fit the above\n\n"
+        "RELATIONSHIP_TYPE — a verb or verb phrase taken DIRECTLY from the passage, in UPPER_SNAKE_CASE.\n"
+        "  WRONG: THREATENS, USES, HAS, IS_RELATED_TO, AFFECTS\n"
+        "  RIGHT: COULD_EXPOSE, CAN_COMPEL, LACKS, PROVIDES, INITIATED\n\n"
+        "RULES:\n"
+        "1. Extract ALL meaningful entities and concepts.\n"
+        "2. Node Name MUST be a short noun phrase, 1–5 words, Title Case. NEVER a full sentence.\n"
+        "   WRONG: 'Law enforcement could compel Discord to intercept a call'\n"
+        "   RIGHT:  NODE|Role|Law Enforcement  and  NODE|Concept|Court Order\n"
+        "3. No markdown, no code, no explanations, no blank lines — only NODE and REL lines.\n"
+        "4. Every entity used in a REL line MUST first appear as a NODE line — use the exact same Name, spaces only, no underscores.\n"
+        "5. Extract ALL relationships — for every meaningful connection between two entities in the passage, output a REL line.\n"
+        "6. Only extract relationships explicitly stated in the passage — do NOT infer or imply connections.\n\n"
+        "EXAMPLE output for a passage about Napoleon:\n"
+        "NODE|Role|Napoleon\n"
+        "NODE|Process|Liberal Reforms\n"
+        "NODE|Role|Military Commanders\n"
+        "NODE|Process|Military Campaigns\n"
+        "NODE|Role|Military Academies\n"
+        "REL|Napoleon|INITIATED|Liberal Reforms\n"
+        "REL|Napoleon|IS_CONSIDERED_AMONG|Military Commanders\n"
+        "REL|Military Academies|STILL_STUDY|Military Campaigns"
+    )
+
+    _KG_UPDATE_SYSTEM = (
+        "Extend a knowledge graph with NEW entities and relationships from the text. "
+        "Output ONLY lines in these two formats — nothing else:\n"
+        "  NODE|Label|Name\n"
+        "  REL|FromName|RELATIONSHIP_TYPE|ToName\n\n"
+        "LABELS — Role, Concept, Technology, Process, Output, Entity.\n"
+        "RELATIONSHIP_TYPE — verb phrase from the text in UPPER_SNAKE_CASE.\n\n"
+        "RULES:\n"
+        "1. Only output entities NOT already in the existing graph.\n"
+        "2. Node Name MUST be a short noun phrase, 1–5 words, Title Case. NEVER a full sentence.\n"
+        "3. No markdown, no explanations, no blank lines — only NODE and REL lines.\n"
+    )
+
     @staticmethod
-    def _extract_cypher(raw: str) -> str:
-        """Extract Cypher from LLM output.
-        Handles: raw Cypher, <cypher>...</cypher> tags, ```cypher ... ``` fences."""
-        if '<cypher>' in raw:
-            raw = raw.split('<cypher>')[-1]
-        if '</cypher>' in raw:
-            raw = raw.split('</cypher>')[0]
-        if '```cypher' in raw:
-            raw = raw.split('```cypher')[-1].split('```')[0]
-        elif '```' in raw:
-            raw = raw.split('```')[1] if raw.count('```') >= 2 else raw
-        return raw.strip()
+    def _parse_kg_output(raw: str, repo_path: str, file_path: str) -> str:
+        """Convert NODE|Label|Name / REL|From|TYPE|To lines into Cypher MERGE statements."""
+        import re as _re
+        raw = _re.sub(r"<\|[^|>]+\|>", "", raw)  # strip granite special tokens like <|file_sep|>
 
-    _CYPHER_SYSTEM = (
-        "Convert the text into a Cypher knowledge graph. Be thorough — extract every meaningful entity, "
-        "concept, role, process, and phenomenon mentioned in the text.\n\n"
-        "NODE LABELS — choose the most specific label:\n"
-        "  Role=person/actor/agent  Concept=abstract idea/phenomenon  Technology=tool/platform/system\n"
-        "  Process=named procedure/workflow  Output=artifact/report produced  Entity=anything else\n\n"
-        "RELATIONSHIP TYPES — use the actual verb or verb phrase from the text, converted to UPPER_SNAKE_CASE. "
-        "Examples: 'occupies' → OCCUPIES, 'exerts' → EXERTS, 'adopt cues from' → ADOPT_CUES_FROM, "
-        "'align their behaviour with' → ALIGN_BEHAVIOUR_WITH, 'embodies' → EMBODIES.\n\n"
-        "RULES:\n"
-        "1. Extract ALL meaningful concepts — people, roles, ideas, behaviours, processes, phenomena.\n"
-        "2. Do NOT create nodes for bare numbers or dates.\n"
-        "3. Relationship labels must be verbs or verb phrases from the text itself.\n"
-        "4. Use MERGE for every node and relationship.\n"
-        "5. Every node MUST have: name, repo_path, file_path.\n"
-        "6. UNIQUE variable per node: a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p.\n"
-        "7. One statement per line. No semicolons. No RETURN. No markdown. No explanations.\n\n"
-        "EXAMPLE (text: 'Node 33 occupies the centre of peer attention and social status. "
-        "She exerts conformity pressure. Actors adopt cues from her as a high status referent. "
-        "Girls align their behaviour with hers.'):\n"
-        "MERGE (a:Role {name: 'Node 33', repo_path: '/v', file_path: '/v/n.md'})\n"
-        "MERGE (b:Concept {name: 'Peer Attention', repo_path: '/v', file_path: '/v/n.md'})\n"
-        "MERGE (c:Concept {name: 'Social Status', repo_path: '/v', file_path: '/v/n.md'})\n"
-        "MERGE (d:Concept {name: 'Conformity Pressure', repo_path: '/v', file_path: '/v/n.md'})\n"
-        "MERGE (e:Concept {name: 'High Status Referent', repo_path: '/v', file_path: '/v/n.md'})\n"
-        "MERGE (f:Role {name: 'Girls', repo_path: '/v', file_path: '/v/n.md'})\n"
-        "MERGE (a)-[:OCCUPIES_CENTRE_OF]->(b)\n"
-        "MERGE (a)-[:OCCUPIES_CENTRE_OF]->(c)\n"
-        "MERGE (a)-[:EXERTS]->(d)\n"
-        "MERGE (a)-[:EMBODIES]->(e)\n"
-        "MERGE (f)-[:ALIGN_BEHAVIOUR_WITH]->(a)"
+        def safe(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("'", "\\'")
+
+        def normalize(name: str) -> str:
+            return name.strip().replace("_", " ").title()
+
+        node_lines = []
+        rel_entries = []
+        defined_names: set = set()
+
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("NODE|"):
+                parts = line.split("|", 3)
+                if len(parts) >= 3:
+                    _, label, name = parts[0], parts[1], parts[2]
+                    label = label.strip() or "Entity"
+                    name = normalize(name)
+                    if name:
+                        defined_names.add(name)
+                        node_lines.append(
+                            f"MERGE (n {{name: '{safe(name)}', "
+                            f"repo_path: '{safe(repo_path)}', file_path: '{safe(file_path)}'}}) "
+                            f"SET n:{label}"
+                        )
+            elif line.startswith("REL|"):
+                parts = line.split("|", 4)
+                if len(parts) >= 4:
+                    _, src, rel_type, dst = parts[0], parts[1], parts[2], parts[3]
+                    src = normalize(src)
+                    rel_type = rel_type.strip().upper().replace(" ", "_")
+                    dst = normalize(dst)
+                    if src and rel_type and rel_type != "REL" and dst:
+                        rel_entries.append((src, rel_type, dst))
+
+        valid_rels = [
+            f"MATCH (a {{name: '{safe(src)}'}}), (b {{name: '{safe(dst)}'}}) "
+            f"MERGE (a)-[:{rel_type}]->(b)"
+            for src, rel_type, dst in rel_entries
+            if src in defined_names and dst in defined_names
+        ]
+
+        return "\n".join(node_lines + valid_rels)
+
+    _RETRY_MSG = (
+        "Your response contained no NODE| or REL| lines.\n"
+        "Output ONLY lines in EXACTLY these formats, nothing else:\n"
+        "NODE|Label|Name\n"
+        "REL|FromName|RELATIONSHIP_TYPE|ToName"
     )
 
-    _CYPHER_UPDATE_SYSTEM = (
-        "Extend an existing knowledge graph with new information from the text. "
-        "Be thorough — extract every new entity, concept, role, process, and phenomenon.\n\n"
-        "NODE LABELS — choose the most specific label:\n"
-        "  Role=person/actor  Concept=abstract idea  Technology=tool/system\n"
-        "  Process=named procedure  Output=artifact produced  Entity=anything else\n\n"
-        "RELATIONSHIP TYPES — use the actual verb or verb phrase from the new text, converted to "
-        "UPPER_SNAKE_CASE. The label must be a verb from the text itself.\n\n"
-        "RULES:\n"
-        "1. Extract ALL meaningful concepts not already in the existing graph.\n"
-        "2. Do NOT create nodes for bare numbers or dates.\n"
-        "3. Relationship labels must be verbs or verb phrases from the text.\n"
-        "4. Use MERGE for every node and relationship.\n"
-        "5. Every node MUST have: name, repo_path, file_path.\n"
-        "6. UNIQUE variable per node: a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p.\n"
-        "7. One statement per line. No semicolons. No RETURN. No markdown. No explanations.\n"
-    )
+    def _invoke_with_retry(self: TextAnalizer, repo_path: str, file_path: str) -> str:
+        raw = self.kg_model.invoke(self.messages).content
+        print(f"KG raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
+        result = self._parse_kg_output(raw, repo_path, file_path)
+        if not result:
+            self.messages += [AIMessage(content=raw), HumanMessage(content=self._RETRY_MSG)]
+            raw = self.kg_model.invoke(self.messages).content
+            print(f"KG retry raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
+            result = self._parse_kg_output(raw, repo_path, file_path)
+        return result
 
     def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
+        if not text.strip():
+            return ""
         self.messages = [
-            SystemMessage(content=self._CYPHER_SYSTEM),
-            HumanMessage(content=(
-                f"repo_path: {repo_path}\n"
-                f"file_path: {file_path}\n\n"
-                f"Text:\n{text}"
-            ))
+            SystemMessage(content=self._KG_SYSTEM),
+            HumanMessage(content=f"Passage:\n{text}")
         ]
-        return self._extract_cypher(self.model.invoke(self.messages).content)
+        return self._invoke_with_retry(repo_path, file_path)
 
     def data_and_text_to_cypher_update(self: TextAnalizer, data: str, text: str, repo_path: str, file_path: str) -> str:
         self.messages = [
-            SystemMessage(content=self._CYPHER_UPDATE_SYSTEM),
+            SystemMessage(content=self._KG_UPDATE_SYSTEM),
             HumanMessage(content=(
-                f"repo_path: {repo_path}\n"
-                f"file_path: {file_path}\n\n"
-                f"Existing graph data:\n{data}\n\n"
-                f"New text to add:\n{text}"
+                f"Existing graph:\n{data}\n\n"
+                f"New passage:\n{text}"
             ))
         ]
-        return self._extract_cypher(self.model.invoke(self.messages).content)
+        return self._invoke_with_retry(repo_path, file_path)
 
     def generate_questions(self: TextAnalizer, text: str) -> str:
         self.messages = [

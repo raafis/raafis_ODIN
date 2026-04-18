@@ -188,23 +188,25 @@ def update_file(file: File) -> None:
     if not content.strip():
         return
 
-    mm.delete_graph_for_file(file.path)
-    cm.delete_file(file.path)
-
     if file.path.endswith("_knowledge_graph.md"):
-        for stmt in KGIndexer.parse(content, repo_path, file.path):
-            try:
-                mm.db.execute(stmt)
-            except Exception as e:
-                print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
+        new_stmts = list(KGIndexer.parse(content, repo_path, file.path))
+        if new_stmts:
+            mm.delete_graph_for_file(file.path)
+            cm.delete_file(file.path)
+            for stmt in new_stmts:
+                try:
+                    mm.db.execute(stmt)
+                except Exception as e:
+                    print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
     else:
         ta = TextAnalizer()
-        data = mm.export_data_for_repo_path(repo_path)
-        if isinstance(data, list) and len(data) == 0:
-            res_queries = ta.text_to_cypher_create(content, repo_path, file.path)
+        res_queries = ta.text_to_cypher_create(content, repo_path, file.path)
+        if res_queries.strip():
+            mm.delete_graph_for_file(file.path)
+            cm.delete_file(file.path)
+            mm.run_update_query(res_queries)
         else:
-            res_queries = ta.data_and_text_to_cypher_update(data, content, repo_path, file.path)
-        mm.run_update_query(res_queries)
+            print(f"WARN: KG extraction returned nothing for {file.path} — keeping existing graph")
 
     # Ensure every node from this file has repo_path and file_path set
     mm.db.execute(
@@ -212,10 +214,16 @@ def update_file(file: File) -> None:
         f"SET n.file_path = '{file.path}', n.repo_path = '{repo_path}'"
     )
 
-    cm.add_file(file.path)
+    try:
+        cm.add_file(file.path)
+    except Exception as e:
+        print(f"WARN: cm.add_file failed (embeddings): {e}")
 
-    for path in Utils.get_all_files_recursive(repo_path):
-        mm.update_embeddings(path)
+    try:
+        for path in Utils.get_all_files_recursive(repo_path):
+            mm.update_embeddings(path)
+    except Exception as e:
+        print(f"WARN: update_embeddings failed: {e}")
 
     return
 
@@ -241,11 +249,7 @@ def add_file(file: File) -> None:
                 print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
     else:
         ta = TextAnalizer()
-        data = mm.export_data_for_repo_path(repo_path)
-        if isinstance(data, list) and len(data) == 0:
-            res_queries = ta.text_to_cypher_create(content, repo_path, file.path)
-        else:
-            res_queries = ta.data_and_text_to_cypher_update(data, content, repo_path, file.path)
+        res_queries = ta.text_to_cypher_create(content, repo_path, file.path)
         mm.run_update_query(res_queries)
 
     # Ensure every node from this file has repo_path and file_path set
@@ -254,10 +258,16 @@ def add_file(file: File) -> None:
         f"SET n.file_path = '{file.path}', n.repo_path = '{repo_path}'"
     )
 
-    cm.add_file(file.path)
+    try:
+        cm.add_file(file.path)
+    except Exception as e:
+        print(f"WARN: cm.add_file failed (embeddings): {e}")
 
-    for path in Utils.get_all_files_recursive(repo_path):
-        mm.update_embeddings(path)
+    try:
+        for path in Utils.get_all_files_recursive(repo_path):
+            mm.update_embeddings(path)
+    except Exception as e:
+        print(f"WARN: update_embeddings failed: {e}")
 
     return
 

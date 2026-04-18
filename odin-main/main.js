@@ -55691,7 +55691,7 @@ var Main = () => {
             )
           );
         });
-        if (active === selectedFile && !ignoreResults)
+        if (active === selectedFile && !ignoreResults && selections.length > 0)
           (_b2 = (_a2 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a2.editor) == null ? void 0 : _b2.setSelections(
             selections
           );
@@ -55823,8 +55823,16 @@ var Main = () => {
     setDisabled(true);
     if (reload)
       setGraphLoading(true);
-    await fetchGraphData(type, root, selectedFile, ignoreResults, suggested).then((data2) => {
-      setData(data2);
+    await fetchGraphData(type, root, selectedFile, ignoreResults, suggested).then(async (data2) => {
+      if (data2.nodes.length === 0 && type === "file" && selectedFile) {
+        setGraphLoading(true);
+        new import_obsidian2.Notice("Generating knowledge graph\u2026");
+        await fetchData("http://localhost:8000/knowledge_base/notes/add_file", { path: root + "/" + selectedFile, type: "Notes", content: "" }, "PUT", 300000).catch(() => {});
+        const newData = await fetchGraphData(type, root, selectedFile, ignoreResults, suggested).catch(() => ({ nodes: [], edges: [] }));
+        setData(newData);
+      } else {
+        setData(data2);
+      }
     }).catch(() => {
       new import_obsidian2.Notice(fetchFailed);
     });

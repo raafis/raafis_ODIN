@@ -38,13 +38,17 @@ class VaultManager:
                     except Exception as e:
                         print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
             else:
-                if i == 0:
-                    res_queries = self.ta.text_to_cypher_create(
-                        file_text, self.vault_path, file_path)
-                else:
+                existing = list(self.mm.run_select_query(
+                    f"MATCH (n {{file_path: '{file_path}'}}) RETURN count(n) as c"
+                ))
+                has_nodes = existing[0]['c'] > 0 if existing else False
+                if has_nodes:
                     data = self.mm.export_data_for_repo_path(self.vault_path)
                     res_queries = self.ta.data_and_text_to_cypher_update(
                         str(data), file_text, self.vault_path, file_path)
+                else:
+                    res_queries = self.ta.text_to_cypher_create(
+                        file_text, self.vault_path, file_path)
                 self.mm.run_update_query(res_queries)
             # Set repo_path/file_path on any nodes the LLM omitted them from
             try:

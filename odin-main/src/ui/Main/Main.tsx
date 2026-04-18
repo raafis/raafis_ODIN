@@ -78,7 +78,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						);
 					});
 
-					if (active === selectedFile && !ignoreResults)
+					if (active === selectedFile && !ignoreResults && selections.length > 0)
 						app?.workspace.activeEditor?.editor?.setSelections(
 							selections
 						);
@@ -229,8 +229,22 @@ const Main: React.FC = (): React.JSX.Element => {
 		if (reload) setGraphLoading(true);
 
 		await fetchGraphData(type, root, selectedFile, ignoreResults, suggested)
-			.then((data) => {
-				setData(data);
+			.then(async (data) => {
+				if (data.nodes.length === 0 && type === "file" && selectedFile) {
+					setGraphLoading(true);
+					new Notice("Generating knowledge graph…");
+					await fetchData(
+						"http://localhost:8000/knowledge_base/notes/add_file",
+						{ path: root + "/" + selectedFile, type: "Notes", content: "" },
+						"PUT",
+						300000
+					).catch(() => {});
+					const newData = await fetchGraphData(type, root, selectedFile, ignoreResults, suggested)
+						.catch(() => ({ nodes: [], edges: [] }));
+					setData(newData);
+				} else {
+					setData(data);
+				}
 			})
 			.catch(() => {
 				new Notice(Messages.fetchFailed);
