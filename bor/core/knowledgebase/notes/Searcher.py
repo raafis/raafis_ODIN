@@ -52,7 +52,7 @@ class Searcher:
 
     def node_id_to_sentences(self: Searcher, id: int) -> List[str]:
         emb = self.mm.embeddings_for_node(id)
-        if emb is None:
+        if not emb:
             return []
         return self.search_text(query_embeddings=emb)
 

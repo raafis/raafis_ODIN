@@ -7,6 +7,6 @@ export const OPERATIONS_MAP: Record<string, { url: string; method: string }> = {
     delete: { url: "delete", method: "DELETE" },
 };
 
-export const OPERATIONS = ["create", "delete", "modify", "rename"];
+export const OPERATIONS = ["create", "delete", "rename"];
 
 export const DEFAULT_SELECTION = "file";

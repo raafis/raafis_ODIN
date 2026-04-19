@@ -200,7 +200,7 @@ def update_file(file: File) -> None:
                     print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
     else:
         ta = TextAnalizer()
-        res_queries = ta.text_to_cypher_create(content, repo_path, file.path)
+        res_queries = ta.text_to_cypher_chunked(content, repo_path, file.path)
         if res_queries.strip():
             mm.delete_graph_for_file(file.path)
             cm.delete_file(file.path)
@@ -249,7 +249,7 @@ def add_file(file: File) -> None:
                 print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
     else:
         ta = TextAnalizer()
-        res_queries = ta.text_to_cypher_create(content, repo_path, file.path)
+        res_queries = ta.text_to_cypher_chunked(content, repo_path, file.path)
         mm.run_update_query(res_queries)
 
     # Ensure every node from this file has repo_path and file_path set

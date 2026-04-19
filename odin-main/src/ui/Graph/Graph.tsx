@@ -11,7 +11,6 @@ interface GraphProps {
 		edges: Edge[];
 	};
 	nodeClickCallback?: (node: NodeSingular) => void;
-	type?: string;
 	visible: boolean;
 	disabled: boolean;
 }
@@ -19,7 +18,6 @@ interface GraphProps {
 const Graph: React.FC<GraphProps> = ({
 	data,
 	nodeClickCallback,
-	type,
 	visible,
 	disabled,
 }) => {
@@ -50,6 +48,15 @@ const Graph: React.FC<GraphProps> = ({
 			}
 		};
 		cyRef.current?.on("click", "node", handleNodeClick);
+	};
+
+	const registerHoverHandler = () => {
+		cyRef.current?.on("mouseover", "node, edge", (event) => {
+			event.target.addClass("hovered");
+		});
+		cyRef.current?.on("mouseout", "node, edge", (event) => {
+			event.target.removeClass("hovered");
+		});
 	};
 
 	const registerClickHandler = () => {
@@ -98,6 +105,7 @@ const Graph: React.FC<GraphProps> = ({
 		registerFileOpenHandler();
 		registerNodeClickHandler();
 		registerClickHandler();
+		registerHoverHandler();
 
 		return () => {
 			console.log("destroy");
@@ -126,10 +134,7 @@ const Graph: React.FC<GraphProps> = ({
 				cyRef.current?.nodes().forEach((node) => {
 					const nodeData = node.data();
 					if (nodeData.priority !== 1) node.unselectify();
-					if (
-						(nodeData.path.split(/(\\|\/)/g).pop() === selected && type !== "file") ||
-						(nodeData.selected && type === "file")
-					) {
+					if (nodeData.selected) {
 						node.select();
 					} else {
 						node.deselect();

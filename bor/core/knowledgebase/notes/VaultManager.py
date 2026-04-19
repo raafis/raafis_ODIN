@@ -47,7 +47,7 @@ class VaultManager:
                     res_queries = self.ta.data_and_text_to_cypher_update(
                         str(data), file_text, self.vault_path, file_path)
                 else:
-                    res_queries = self.ta.text_to_cypher_create(
+                    res_queries = self.ta.text_to_cypher_chunked(
                         file_text, self.vault_path, file_path)
                 self.mm.run_update_query(res_queries)
             # Set repo_path/file_path on any nodes the LLM omitted them from

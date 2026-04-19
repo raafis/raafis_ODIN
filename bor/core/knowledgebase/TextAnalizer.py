@@ -71,14 +71,18 @@ class TextAnalizer:
         "  Entity = anything else that does not fit the above\n\n"
         "RELATIONSHIP_TYPE — a verb or verb phrase taken DIRECTLY from the passage, in UPPER_SNAKE_CASE.\n"
         "  WRONG: THREATENS, USES, HAS, IS_RELATED_TO, AFFECTS\n"
-        "  RIGHT: COULD_EXPOSE, CAN_COMPEL, LACKS, PROVIDES, INITIATED\n\n"
+        "  RIGHT: COULD_EXPOSE, CAN_COMPEL, LACKS, PROVIDES, INITIATED\n"
+        "  For type/classification ('X is a type of Y', 'X is an instance of Y'): always use IS_A, never bare IS.\n\n"
         "RULES:\n"
         "1. Extract ALL meaningful entities and concepts.\n"
         "2. Node Name MUST be a short noun phrase, 1–5 words, Title Case. NEVER a full sentence.\n"
         "   WRONG: 'Law enforcement could compel Discord to intercept a call'\n"
         "   RIGHT:  NODE|Role|Law Enforcement  and  NODE|Concept|Court Order\n"
         "3. No markdown, no code, no explanations, no blank lines — only NODE and REL lines.\n"
-        "4. Every entity used in a REL line MUST first appear as a NODE line — use the exact same Name, spaces only, no underscores.\n"
+        "4. REL FromName and ToName MUST both be names that appear as NODE lines in this same output.\n"
+        "   If a concept is worth mentioning in a REL, declare it as a NODE first.\n"
+        "   WRONG: REL|Reciprocity|DEFINED_BY|(number of reciprocated arcs) / (total arcs)\n"
+        "   RIGHT:  NODE|Process|Reciprocity Ratio  then  REL|Reciprocity|DEFINED_BY|Reciprocity Ratio\n"
         "5. Extract ALL relationships — for every meaningful connection between two entities in the passage, output a REL line.\n"
         "6. Only extract relationships explicitly stated in the passage — do NOT infer or imply connections.\n\n"
         "EXAMPLE output for a passage about Napoleon:\n"
@@ -173,6 +177,21 @@ class TextAnalizer:
             result = self._parse_kg_output(raw, repo_path, file_path)
         return result
 
+    @staticmethod
+    def _split_into_chunks(text: str, max_chars: int = 3000) -> list:
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        chunks, current, current_len = [], [], 0
+        for para in paragraphs:
+            if current_len + len(para) > max_chars and current:
+                chunks.append("\n\n".join(current))
+                current, current_len = [para], len(para)
+            else:
+                current.append(para)
+                current_len += len(para) + 2
+        if current:
+            chunks.append("\n\n".join(current))
+        return chunks or [text]
+
     def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
         if not text.strip():
             return ""
@@ -191,6 +210,33 @@ class TextAnalizer:
             ))
         ]
         return self._invoke_with_retry(repo_path, file_path)
+
+    @staticmethod
+    def _names_from_cypher(cypher: str) -> list:
+        import re as _re
+        return list(dict.fromkeys(_re.findall(r"name:\s*'([^']+)'", cypher)))
+
+    def text_to_cypher_chunked(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
+        chunks = self._split_into_chunks(text)
+        if len(chunks) == 1:
+            return self.text_to_cypher_create(chunks[0], repo_path, file_path)
+        print(f"Chunked extraction: {len(chunks)} chunks for {file_path}", flush=True)
+        accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path)
+        for i, chunk in enumerate(chunks[1:], 2):
+            print(f"Chunk {i}/{len(chunks)}", flush=True)
+            existing_names = self._names_from_cypher(accumulated)
+            context = "\n".join(f"- {n}" for n in existing_names)
+            self.messages = [
+                SystemMessage(content=self._KG_SYSTEM),
+                HumanMessage(content=(
+                    f"Nodes already extracted — do NOT output these again:\n{context}\n\n"
+                    f"Passage:\n{chunk}"
+                ))
+            ]
+            update = self._invoke_with_retry(repo_path, file_path)
+            if update.strip():
+                accumulated = accumulated + "\n" + update
+        return accumulated
 
     def generate_questions(self: TextAnalizer, text: str) -> str:
         self.messages = [

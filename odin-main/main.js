@@ -52524,6 +52524,21 @@ var GraphStyle = [
       "text-wrap": "wrap",
       "text-max-width": "150px"
     }
+  },
+  {
+    selector: "node.hovered",
+    style: {
+      "border-width": "3px",
+      "border-color": "#AE8DEF"
+    }
+  },
+  {
+    selector: "edge.hovered",
+    style: {
+      width: 3,
+      "line-color": "#AE8DEF",
+      "target-arrow-color": "#AE8DEF"
+    }
   }
 ];
 
@@ -52535,7 +52550,7 @@ var OPERATIONS_MAP = {
   rename: { url: "rename", method: "POST" },
   delete: { url: "delete", method: "DELETE" }
 };
-var OPERATIONS = ["create", "delete", "modify", "rename"];
+var OPERATIONS = ["create", "delete", "rename"];
 var DEFAULT_SELECTION = "file";
 
 // src/ui/hooks/useApp.ts
@@ -52555,7 +52570,6 @@ var import_jsx_runtime = __toESM(require_jsx_runtime());
 var Graph = ({
   data,
   nodeClickCallback,
-  type,
   visible,
   disabled
 }) => {
@@ -52585,6 +52599,15 @@ var Graph = ({
       }
     };
     (_a = cyRef.current) == null ? void 0 : _a.on("click", "node", handleNodeClick);
+  };
+  const registerHoverHandler = () => {
+    var _a, _b;
+    (_a = cyRef.current) == null ? void 0 : _a.on("mouseover", "node, edge", (event) => {
+      event.target.addClass("hovered");
+    });
+    (_b = cyRef.current) == null ? void 0 : _b.on("mouseout", "node, edge", (event) => {
+      event.target.removeClass("hovered");
+    });
   };
   const registerClickHandler = () => {
     var _a;
@@ -52626,6 +52649,7 @@ var Graph = ({
     registerFileOpenHandler();
     registerNodeClickHandler();
     registerClickHandler();
+    registerHoverHandler();
     return () => {
       var _a;
       console.log("destroy");
@@ -52654,7 +52678,7 @@ var Graph = ({
           const nodeData = node2.data();
           if (nodeData.priority !== 1)
             node2.unselectify();
-          if (nodeData.path.split(/(\\|\/)/g).pop() === selected && type !== "file" || nodeData.selected && type === "file") {
+          if (nodeData.selected) {
             node2.select();
           } else {
             node2.deselect();
@@ -55562,21 +55586,9 @@ var shortenWord = (word, maxLength) => {
 var shortenWord_default = shortenWord;
 
 // src/ui/Main/MainUtils.ts
-var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) => {
-  let fetchBody = {};
-  const fetchUrl = (type === "vault" || !selectedFile) ? "http://localhost:8000/knowledge_base/general/get_all_for_repo" : "http://localhost:8000/knowledge_base/notes/get_for_path";
-  if (type === "vault" || !selectedFile) {
-    fetchBody = {
-      path: root,
-      type: "Notes"
-    };
-  } else if (type === "file" && selectedFile) {
-    fetchBody = {
-      path: root + "/" + selectedFile,
-      type: "Notes",
-      content: ""
-    };
-  }
+var fetchGraphData = async (root, selectedFile, ignoreResults, suggested) => {
+  const fetchUrl = selectedFile ? "http://localhost:8000/knowledge_base/notes/get_for_path" : "http://localhost:8000/knowledge_base/general/get_all_for_repo";
+  const fetchBody = selectedFile ? { path: root + "/" + selectedFile, type: "Notes", content: "" } : { path: root, type: "Notes" };
   const nodeList = [];
   const edgeList = [];
   console.log("fetching");
@@ -55597,7 +55609,7 @@ var fetchGraphData = async (type, root, selectedFile, ignoreResults, suggested) 
                 label: shortenWord_default(element.properties.name, 20),
                 fullLabel: element.properties.name,
                 priority: 1,
-                selected: type !== "file" && selectedFile === fileName || suggested.contains(element.id),
+                selected: suggested.contains(element.id),
                 path: fileName
               }
             });
@@ -55645,7 +55657,6 @@ var Main = () => {
     nodes: [],
     edges: []
   });
-  const [type, setType] = (0, import_react7.useState)(DEFAULT_SELECTION);
   const [suggested, setSuggested] = (0, import_react7.useState)([]);
   const [selectedFile, setSelectedFile] = (0, import_react7.useState)(
     ((_b = (_a = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a.file) == null ? void 0 : _b.path) || ""
@@ -55654,14 +55665,7 @@ var Main = () => {
   const [firstRender, setFirstRender] = (0, import_react7.useState)(true);
   const [disabled, setDisabled] = (0, import_react7.useState)(true);
   const disabledRef = (0, import_react7.useRef)(true);
-  const options = [
-    { label: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Archive, {}), value: "vault", text: "Vault view" },
-    { label: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(FileBarChart2, {}), value: "file", text: "File view" }
-  ];
   const root = (app == null ? void 0 : app.vault.adapter) instanceof import_obsidian2.FileSystemAdapter ? app.vault.adapter.getBasePath().replaceAll("\\", "/") : "/";
-  const onChangeCallback = (value) => {
-    setType(value);
-  };
   const onNodeClickCallback = async (node2) => {
     let ignoreResults = false;
     if (type === "file") {
@@ -55771,11 +55775,7 @@ var Main = () => {
       console.log("fetched nodes data: ");
       console.log(data2);
       setSuggested(data2.map((node2) => node2.id));
-      if (type !== "file") {
-        setType("file");
-      } else {
-        populateGraphData(false);
-      }
+      populateGraphData(false);
     }).catch(() => {
       new import_obsidian2.Notice(fetchFailed);
     });
@@ -55793,6 +55793,28 @@ var Main = () => {
       icon: "hexagon",
       callback: nodeSuggest,
       data: "selection"
+    },
+    {
+      title: "Regenerate Knowledge Graph",
+      icon: "git-pull-request-arrow",
+      callback: async (filePath) => {
+        if (!filePath) {
+          new import_obsidian2.Notice("No file is open.");
+          return;
+        }
+        try {
+          await fetchData(
+            "http://localhost:8000/knowledge_base/notes/delete_file",
+            { path: root + "/" + filePath, type: "Notes", content: "" },
+            "DELETE"
+          );
+          setSelectedFile("");
+          setTimeout(() => setSelectedFile(filePath), 100);
+        } catch (e) {
+          new import_obsidian2.Notice("Failed to regenerate knowledge graph.");
+        }
+      },
+      data: "path"
     }
   ];
   const handleFileEvent = (operation) => (file, oldPath) => {
@@ -55823,12 +55845,12 @@ var Main = () => {
     setDisabled(true);
     if (reload)
       setGraphLoading(true);
-    await fetchGraphData(type, root, selectedFile, ignoreResults, suggested).then(async (data2) => {
-      if (data2.nodes.length === 0 && type === "file" && selectedFile) {
+    await fetchGraphData(root, selectedFile, ignoreResults, suggested).then(async (data2) => {
+      if (data2.nodes.length === 0 && selectedFile) {
         setGraphLoading(true);
         new import_obsidian2.Notice("Generating knowledge graph\u2026");
         await fetchData("http://localhost:8000/knowledge_base/notes/add_file", { path: root + "/" + selectedFile, type: "Notes", content: "" }, "PUT", 300000).catch(() => {});
-        const newData = await fetchGraphData(type, root, selectedFile, ignoreResults, suggested).catch(() => ({ nodes: [], edges: [] }));
+        const newData = await fetchGraphData(root, selectedFile, ignoreResults, suggested).catch(() => ({ nodes: [], edges: [] }));
         setData(newData);
       } else {
         setData(data2);
@@ -55852,10 +55874,6 @@ var Main = () => {
       populateGraphData(false);
   }, [selectedFile]);
   (0, import_react7.useEffect)(() => {
-    if (!firstRender)
-      populateGraphData(true);
-  }, [type]);
-  (0, import_react7.useEffect)(() => {
     setDisabled(true);
     const initRepo = async () => {
       await fetchData(
@@ -55867,8 +55885,9 @@ var Main = () => {
       );
     };
     initRepo();
+    const eventRefs = [];
     OPERATIONS.forEach((op) => {
-      app == null ? void 0 : app.vault.on(op, (file, oldPath) => {
+      const ref = app == null ? void 0 : app.vault.on(op, (file, oldPath) => {
         if (op === "rename") {
           handleFileEvent(op)(file, oldPath);
         } else {
@@ -55876,13 +55895,15 @@ var Main = () => {
         }
         populateGraphData(false);
       });
+      if (ref) eventRefs.push(ref);
     });
-    app == null ? void 0 : app.workspace.on("file-open", () => {
+    const fileOpenRef = app == null ? void 0 : app.workspace.on("file-open", () => {
       var _a2, _b2;
       setSelectedFile(((_b2 = (_a2 = app.workspace.activeEditor) == null ? void 0 : _a2.file) == null ? void 0 : _b2.path) || "");
     });
+    if (fileOpenRef) eventRefs.push(fileOpenRef);
     commands.forEach((command) => {
-      app == null ? void 0 : app.workspace.on("editor-menu", (menu) => {
+      const ref = app == null ? void 0 : app.workspace.on("editor-menu", (menu) => {
         menu.addItem((item) => {
           item.setTitle(command.title).setIcon(command.icon).onClick(() => {
             var _a2, _b2, _c, _d;
@@ -55895,29 +55916,22 @@ var Main = () => {
           });
         });
       });
+      if (ref) eventRefs.push(ref);
     });
     populateGraphData(true);
     setDisabled(false);
     setFirstRender(false);
+    return () => {
+      eventRefs.forEach((ref) => app == null ? void 0 : app.workspace.offref(ref));
+    };
   }, []);
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(Container, { children: [
     disabled && !graphLoading && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(GlobalLoadingContainer, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingIcon2, {}) }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-      RadioSelect_default,
-      {
-        options,
-        defaultSelectedValue: "file",
-        selectedValueOverride: type,
-        onChange: onChangeCallback,
-        disabled: selectedFile.length === 0 || disabled
-      }
-    ),
     /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
       Graph_default,
       {
         data,
         nodeClickCallback: onNodeClickCallback,
-        type,
         visible: !graphLoading,
         disabled
       }

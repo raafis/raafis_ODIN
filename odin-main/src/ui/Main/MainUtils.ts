@@ -4,25 +4,14 @@ import { Edge, Node } from "src/shared/types/graphTypes";
 import { fetchData } from "src/util/fetchData";
 import shortenWord from "src/util/shortenWord";
 
-export const fetchGraphData = async (type: string, root: string, selectedFile: string, ignoreResults: boolean, suggested: number[]): Promise<{ nodes: Node[], edges: Edge[] }> => {
-    let fetchBody = {};
-    const fetchUrl =
-        (type === "vault" || !selectedFile)
-            ? "http://localhost:8000/knowledge_base/general/get_all_for_repo"
-            : "http://localhost:8000/knowledge_base/notes/get_for_path";
+export const fetchGraphData = async (root: string, selectedFile: string, ignoreResults: boolean, suggested: number[]): Promise<{ nodes: Node[], edges: Edge[] }> => {
+    const fetchUrl = selectedFile
+        ? "http://localhost:8000/knowledge_base/notes/get_for_path"
+        : "http://localhost:8000/knowledge_base/general/get_all_for_repo";
 
-    if (type === "vault" || !selectedFile) {
-        fetchBody = {
-            path: root,
-            type: "Notes",
-        };
-    } else if (type === "file" && selectedFile) {
-        fetchBody = {
-            path: root + "/" + selectedFile,
-            type: "Notes",
-            content: "",
-        };
-    }
+    const fetchBody = selectedFile
+        ? { path: root + "/" + selectedFile, type: "Notes", content: "" }
+        : { path: root, type: "Notes" };
 
     const nodeList: Node[] = [];
     const edgeList: Edge[] = [];
@@ -47,10 +36,7 @@ export const fetchGraphData = async (type: string, root: string, selectedFile: s
                                     label: shortenWord(element.properties.name, 20),
                                     fullLabel: element.properties.name,
                                     priority: 1,
-                                    selected:
-                                        (type !== "file" &&
-                                            selectedFile === fileName) ||
-                                        suggested.contains(element.id),
+                                    selected: suggested.contains(element.id),
                                     path: fileName,
                                 },
                             });

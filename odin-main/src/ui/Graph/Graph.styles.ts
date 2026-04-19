@@ -79,4 +79,19 @@ export const GraphStyle = [
             "text-max-width": "150px",
         },
     },
+    {
+        selector: "node.hovered",
+        style: {
+            "border-width": "3px",
+            "border-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "edge.hovered",
+        style: {
+            width: 3,
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
+        },
+    },
 ]

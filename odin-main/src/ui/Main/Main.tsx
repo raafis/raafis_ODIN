@@ -4,8 +4,6 @@ import PromptBar from "../PromptBar/PromptBar";
 import * as S from "./Main.styles";
 import { useApp } from "../hooks/useApp";
 import { Edge, Node } from "src/shared/types/graphTypes";
-import RadioSelect from "../RadioSelect/RadioSelect";
-import { Archive, FileBarChart2 } from "lucide-react";
 import { fetchData } from "src/util/fetchData";
 import { FileSystemAdapter, Notice, TAbstractFile } from "obsidian";
 import getEditorPosition from "src/util/getEditorPosition";
@@ -24,7 +22,6 @@ const Main: React.FC = (): React.JSX.Element => {
 		nodes: [],
 		edges: [],
 	});
-	const [type, setType] = useState<string>(Constants.DEFAULT_SELECTION);
 	const [suggested, setSuggested] = useState<number[]>([]);
 	const [selectedFile, setSelectedFile] = useState<string>(
 		app?.workspace.activeEditor?.file?.path || ""
@@ -34,23 +31,14 @@ const Main: React.FC = (): React.JSX.Element => {
 	const [disabled, setDisabled] = useState<boolean>(true);
 	const disabledRef = useRef<boolean>(true);
 
-	const options = [
-		{ label: <Archive />, value: "vault", text: "Vault view" },
-		{ label: <FileBarChart2 />, value: "file", text: "File view" },
-	];
-
 	const root =
 		app?.vault.adapter instanceof FileSystemAdapter
 			? app.vault.adapter.getBasePath().replaceAll("\\", "/")
 			: "/";
 
-	const onChangeCallback = (value: string): void => {
-		setType(value);
-	};
-
 	const onNodeClickCallback = async (node: NodeSingular) => {
 		let ignoreResults = false;
-		if (type === "file") {
+		{
 			setDisabled(true);
 			const active = selectedFile;
 			if (suggested.length > 0) setSuggested([]);
@@ -170,11 +158,7 @@ const Main: React.FC = (): React.JSX.Element => {
 				console.log("fetched nodes data: ");
 				console.log(data);
 				setSuggested(data.map((node: AnalyticsNode) => node.id));
-				if (type !== "file") {
-					setType("file");
-				} else {
-					populateGraphData(false);
-				}
+				populateGraphData(false);
 			})
 			.catch(() => {
 				new Notice(Messages.fetchFailed);
@@ -194,6 +178,28 @@ const Main: React.FC = (): React.JSX.Element => {
 			icon: "hexagon",
 			callback: nodeSuggest,
 			data: "selection",
+		},
+		{
+			title: "Regenerate Knowledge Graph",
+			icon: "git-pull-request-arrow",
+			callback: async (filePath: string) => {
+				if (!filePath) {
+					new Notice("No file is open.");
+					return;
+				}
+				try {
+					await fetchData(
+						"http://localhost:8000/knowledge_base/notes/delete_file",
+						{ path: root + "/" + filePath, type: "Notes", content: "" },
+						"DELETE"
+					);
+					setSelectedFile("");
+					setTimeout(() => setSelectedFile(filePath), 100);
+				} catch {
+					new Notice("Failed to regenerate knowledge graph.");
+				}
+			},
+			data: "path",
 		},
 	];
 
@@ -228,7 +234,7 @@ const Main: React.FC = (): React.JSX.Element => {
 		setDisabled(true);
 		if (reload) setGraphLoading(true);
 
-		await fetchGraphData(type, root, selectedFile, ignoreResults, suggested)
+		await fetchGraphData(root, selectedFile, ignoreResults, suggested)
 			.then(async (data) => {
 				if (data.nodes.length === 0 && type === "file" && selectedFile) {
 					setGraphLoading(true);
@@ -239,7 +245,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						"PUT",
 						300000
 					).catch(() => {});
-					const newData = await fetchGraphData(type, root, selectedFile, ignoreResults, suggested)
+					const newData = await fetchGraphData(root, selectedFile, ignoreResults, suggested)
 						.catch(() => ({ nodes: [], edges: [] }));
 					setData(newData);
 				} else {
@@ -269,10 +275,6 @@ const Main: React.FC = (): React.JSX.Element => {
 	}, [selectedFile]);
 
 	useEffect(() => {
-		if (!firstRender) populateGraphData(true);
-	}, [type]);
-
-	useEffect(() => {
 		setDisabled(true);
 		const initRepo = async () => {
 			await fetchData(
@@ -286,8 +288,10 @@ const Main: React.FC = (): React.JSX.Element => {
 
 		initRepo();
 
+		const eventRefs: any[] = [];
+
 		Constants.OPERATIONS.forEach((op: "rename") => {
-			app?.vault.on(op, (file, oldPath?: string) => {
+			const ref = app?.vault.on(op, (file, oldPath?: string) => {
 				if (op === "rename") {
 					handleFileEvent(op)(file, oldPath);
 				} else {
@@ -295,14 +299,16 @@ const Main: React.FC = (): React.JSX.Element => {
 				}
 				populateGraphData(false);
 			});
+			if (ref) eventRefs.push(ref);
 		});
 
-		app?.workspace.on("file-open", () => {
+		const fileOpenRef = app?.workspace.on("file-open", () => {
 			setSelectedFile(app.workspace.activeEditor?.file?.path || "");
 		});
+		if (fileOpenRef) eventRefs.push(fileOpenRef);
 
 		commands.forEach((command) => {
-			app?.workspace.on("editor-menu", (menu) => {
+			const ref = app?.workspace.on("editor-menu", (menu) => {
 				menu.addItem((item) => {
 					item.setTitle(command.title)
 						.setIcon(command.icon)
@@ -318,11 +324,16 @@ const Main: React.FC = (): React.JSX.Element => {
 						});
 				});
 			});
+			if (ref) eventRefs.push(ref);
 		});
 
 		populateGraphData(true);
 		setDisabled(false);
 		setFirstRender(false);
+
+		return () => {
+			eventRefs.forEach((ref) => app?.workspace.offref(ref));
+		};
 	}, []);
 
 	return (
@@ -332,17 +343,9 @@ const Main: React.FC = (): React.JSX.Element => {
 					<S.LoadingIcon />
 				</S.GlobalLoadingContainer>
 			)}
-			<RadioSelect
-				options={options}
-				defaultSelectedValue="file"
-				selectedValueOverride={type}
-				onChange={onChangeCallback}
-				disabled={selectedFile.length === 0 || disabled}
-			/>
 			<Graph
 				data={data}
 				nodeClickCallback={onNodeClickCallback}
-				type={type}
 				visible={!graphLoading}
 				disabled={disabled}
 			/>

@@ -198,7 +198,8 @@ class MemgraphManager:
     def embeddings_for_node(self: MemgraphManager, node_id: int) -> List[float]:
         query = CQ.get_embeddings_for_node_query(node_id)
         res = self.db.execute_and_fetch(query)
-        return next(res)['embeddings']
+        row = next(res, None)
+        return row['embeddings'] if row else None
 
 
 if __name__ == '__main__':
