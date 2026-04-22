@@ -5,13 +5,10 @@ import { fetchData } from "src/util/fetchData";
 import shortenWord from "src/util/shortenWord";
 
 export const fetchGraphData = async (root: string, selectedFile: string, ignoreResults: boolean, suggested: number[]): Promise<{ nodes: Node[], edges: Edge[] }> => {
-    const fetchUrl = selectedFile
-        ? "http://localhost:8000/knowledge_base/notes/get_for_path"
-        : "http://localhost:8000/knowledge_base/general/get_all_for_repo";
+    if (!selectedFile) return { nodes: [], edges: [] };
 
-    const fetchBody = selectedFile
-        ? { path: root + "/" + selectedFile, type: "Notes", content: "" }
-        : { path: root, type: "Notes" };
+    const fetchUrl = "http://localhost:8000/knowledge_base/notes/get_for_path";
+    const fetchBody = { path: root + "/" + selectedFile, type: "Notes", content: "" };
 
     const nodeList: Node[] = [];
     const edgeList: Edge[] = [];

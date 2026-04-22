@@ -15,7 +15,7 @@ from core.knowledgebase import constants
 
 from core.knowledgebase.Initializer import Initializer
 from core.knowledgebase.MemgraphManager import MemgraphManager
-from core.knowledgebase.TextAnalizer import TextAnalizer
+from core.knowledgebase.TextAnalizer import TextAnalizer, get_generation_progress
 from core.knowledgebase.QueryAgents import NotesQueryAgent, CodeQueryAgent
 
 from core.knowledgebase.notes.VaultManager import VaultManager
@@ -220,12 +220,28 @@ def update_file(file: File) -> None:
         print(f"WARN: cm.add_file failed (embeddings): {e}")
 
     try:
-        for path in Utils.get_all_files_recursive(repo_path):
-            mm.update_embeddings(path)
+        mm.update_embeddings(file.path)
     except Exception as e:
         print(f"WARN: update_embeddings failed: {e}")
 
     return
+
+@app.get("/knowledge_base/notes/generation_progress")
+def generation_progress(path: str):
+    progress = get_generation_progress(path)
+    if progress is None:
+        return {"status": "idle"}
+    current = progress["current"]
+    total = progress["total"]
+    chunk_tokens = progress.get("chunk_tokens", 0)
+    # Smooth percent: chunks done + fraction of current chunk based on token count.
+    # num_predict=1024 is the cap; clamp to 0.95 within a chunk so it never hits
+    # the next chunk boundary early.
+    token_fraction = min(chunk_tokens / 1024, 0.95) if total > 0 else 0
+    raw = (current + token_fraction) / total if total else 0
+    percent = min(round(raw * 100), 99)  # cap at 99 until actually done
+    return {"status": "generating", "percent": percent}
+
 
 # TODO: test with GPT4
 
@@ -264,8 +280,7 @@ def add_file(file: File) -> None:
         print(f"WARN: cm.add_file failed (embeddings): {e}")
 
     try:
-        for path in Utils.get_all_files_recursive(repo_path):
-            mm.update_embeddings(path)
+        mm.update_embeddings(file.path)
     except Exception as e:
         print(f"WARN: update_embeddings failed: {e}")
 

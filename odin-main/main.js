@@ -52520,6 +52520,9 @@ var GraphStyle = [
   {
     selector: "edge:selected",
     style: {
+      width: 3,
+      "line-color": "#AE8DEF",
+      "target-arrow-color": "#AE8DEF",
       label: "data(fullLabel)",
       "text-wrap": "wrap",
       "text-max-width": "150px"
@@ -52538,6 +52541,20 @@ var GraphStyle = [
       width: 3,
       "line-color": "#AE8DEF",
       "target-arrow-color": "#AE8DEF"
+    }
+  },
+  {
+    selector: "edge.edge-active",
+    style: {
+      width: 3,
+      "line-color": "#AE8DEF",
+      "target-arrow-color": "#AE8DEF"
+    }
+  },
+  {
+    selector: ".dimmed",
+    style: {
+      opacity: 0.25
     }
   }
 ];
@@ -52574,6 +52591,8 @@ var Graph = ({
   disabled
 }) => {
   const [selected, setSelected] = (0, import_react3.useState)(void 0);
+  const [activeNodeId, setActiveNodeId] = (0, import_react3.useState)(void 0);
+  const activeNodeIdRef = (0, import_react3.useRef)(void 0);
   const cyRef = (0, import_react3.useRef)(null);
   const app = useApp();
   app == null ? void 0 : app.workspace.onLayoutReady(() => {
@@ -52587,6 +52606,7 @@ var Graph = ({
     app == null ? void 0 : app.workspace.on("file-open", () => {
       var _a, _b;
       setSelected((_b = (_a = app.workspace.activeEditor) == null ? void 0 : _a.file) == null ? void 0 : _b.path.split(/(\\|\/)/g).pop());
+      setActiveNodeId(void 0);
     });
   };
   const registerNodeClickHandler = () => {
@@ -52597,15 +52617,43 @@ var Graph = ({
         setSelected(path);
         app == null ? void 0 : app.workspace.openLinkText("", path);
       }
+      setActiveNodeId(event.target.id());
     };
     (_a = cyRef.current) == null ? void 0 : _a.on("click", "node", handleNodeClick);
   };
   const registerHoverHandler = () => {
-    var _a, _b;
-    (_a = cyRef.current) == null ? void 0 : _a.on("mouseover", "node, edge", (event) => {
+    var _a, _b, _c, _d;
+    (_a = cyRef.current) == null ? void 0 : _a.on("mouseover", "node", (event) => {
+      const node = event.target;
+      node.addClass("hovered");
+      node.outgoers("edge").addClass("hovered");
+      const currentActiveId = activeNodeIdRef.current;
+      let excluded = node.union(node.outgoers("edge"));
+      if (currentActiveId) {
+        const activeNode = cyRef.current?.$id(currentActiveId);
+        if (activeNode?.length) {
+          excluded = excluded.union(activeNode).union(activeNode.outgoers("edge"));
+        }
+      }
+      cyRef.current?.elements().not(excluded).addClass("dimmed");
+    });
+    (_b = cyRef.current) == null ? void 0 : _b.on("mouseout", "node", (event) => {
+      const node = event.target;
+      node.removeClass("hovered");
+      node.outgoers("edge").removeClass("hovered");
+      cyRef.current?.elements().removeClass("dimmed");
+      const currentActiveId = activeNodeIdRef.current;
+      if (currentActiveId) {
+        const activeNode = cyRef.current?.$id(currentActiveId);
+        if (activeNode?.length) {
+          cyRef.current?.elements().not(activeNode).not(activeNode.outgoers("edge")).addClass("dimmed");
+        }
+      }
+    });
+    (_c = cyRef.current) == null ? void 0 : _c.on("mouseover", "edge", (event) => {
       event.target.addClass("hovered");
     });
-    (_b = cyRef.current) == null ? void 0 : _b.on("mouseout", "node, edge", (event) => {
+    (_d = cyRef.current) == null ? void 0 : _d.on("mouseout", "edge", (event) => {
       event.target.removeClass("hovered");
     });
   };
@@ -52615,6 +52663,7 @@ var Graph = ({
       var _a2, _b, _c;
       if (event.target === cyRef.current) {
         (_a2 = cyRef.current) == null ? void 0 : _a2.edges().deselect();
+        setActiveNodeId(void 0);
         (_b = cyRef.current) == null ? void 0 : _b.nodes().filter((node2) => node2.data().priority === 1).unselectify();
       } else {
         (_c = cyRef.current) == null ? void 0 : _c.nodes().filter((node2) => node2.data().priority === 1).selectify();
@@ -52623,13 +52672,16 @@ var Graph = ({
     (_a = cyRef.current) == null ? void 0 : _a.on("click", handleClick);
   };
   (0, import_react3.useEffect)(() => {
-    var _a;
+    var _a, _b;
     const handleNodeClick = (event) => {
       if (!disabled && nodeClickCallback) {
         nodeClickCallback(event.target);
       }
     };
     (_a = cyRef.current) == null ? void 0 : _a.on("click", "node", handleNodeClick);
+    return () => {
+      (_b = cyRef.current) == null ? void 0 : _b.off("click", "node", handleNodeClick);
+    };
   }, [nodeClickCallback]);
   (0, import_react3.useEffect)(() => {
     console.log("render");
@@ -52669,6 +52721,7 @@ var Graph = ({
     };
     console.log("refresh");
     refreshGraph();
+    setActiveNodeId(void 0);
   }, [data]);
   (0, import_react3.useEffect)(() => {
     if (cyRef.current && data.nodes) {
@@ -52687,6 +52740,22 @@ var Graph = ({
       });
     }
   }, [data, selected]);
+  (0, import_react3.useEffect)(() => {
+    if (cyRef.current) {
+      cyRef.current.edges().removeClass("edge-active");
+      cyRef.current.elements().removeClass("dimmed");
+      if (activeNodeId) {
+        const activeNode = cyRef.current.$id(activeNodeId);
+        if (activeNode.length) {
+          activeNodeIdRef.current = activeNodeId;
+          activeNode.outgoers("edge").addClass("edge-active");
+          cyRef.current.elements().not(activeNode).not(activeNode.outgoers("edge")).addClass("dimmed");
+        }
+      } else {
+        activeNodeIdRef.current = void 0;
+      }
+    }
+  }, [activeNodeId, data]);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(GraphContainer, { id: "cy", $visible: visible });
 };
 var Graph_default = Graph;
@@ -55437,6 +55506,47 @@ var GlobalLoadingContainer = st.div`
     background-color: var(--color-base-00);
     border: 1px solid var(--divider-color);
 `;
+var GenerationBanner = st.div`
+    width: 100%;
+    padding: var(--size-4-2) var(--size-4-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2);
+    background-color: var(--color-base-10);
+    border-bottom: 1px solid var(--divider-color);
+    border-radius: var(--radius-s);
+`;
+var GenerationRow = st.div`
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2);
+`;
+var GenerationText = st.span`
+    font-size: var(--font-ui-small);
+    color: var(--text-muted);
+    flex: 1;
+`;
+var GenerationPercent = st.span`
+    font-size: var(--font-ui-small);
+    color: var(--color-accent-1);
+    font-weight: var(--font-semibold);
+`;
+var GenerationProgressBar = st.div`
+    width: 100%;
+    height: 4px;
+    background-color: var(--color-base-25);
+    border-radius: 2px;
+    overflow: hidden;
+    &::after {
+        content: '';
+        display: block;
+        height: 100%;
+        width: ${(props) => props.$percent}%;
+        background-color: var(--color-accent-1);
+        border-radius: 2px;
+        transition: width 0.5s ease;
+    }
+`;
 
 // src/ui/RadioSelect/RadioSelect.tsx
 var import_react6 = __toESM(require_react());
@@ -55535,7 +55645,7 @@ var import_obsidian2 = require("obsidian");
 // src/util/getEditorPosition.ts
 var getEditorPosition = (file, data) => {
   const lines = file.split("\n");
-  let index = file.search(data);
+  let index = file.indexOf(data);
   let total = 0;
   let anchor = { ch: 0, line: 0 };
   let head = { ch: 0, line: 0 };
@@ -55587,8 +55697,9 @@ var shortenWord_default = shortenWord;
 
 // src/ui/Main/MainUtils.ts
 var fetchGraphData = async (root, selectedFile, ignoreResults, suggested) => {
-  const fetchUrl = selectedFile ? "http://localhost:8000/knowledge_base/notes/get_for_path" : "http://localhost:8000/knowledge_base/general/get_all_for_repo";
-  const fetchBody = selectedFile ? { path: root + "/" + selectedFile, type: "Notes", content: "" } : { path: root, type: "Notes" };
+  if (!selectedFile) return { nodes: [], edges: [] };
+  const fetchUrl = "http://localhost:8000/knowledge_base/notes/get_for_path";
+  const fetchBody = { path: root + "/" + selectedFile, type: "Notes", content: "" };
   const nodeList = [];
   const edgeList = [];
   console.log("fetching");
@@ -55662,48 +55773,47 @@ var Main = () => {
     ((_b = (_a = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a.file) == null ? void 0 : _b.path) || ""
   );
   const [graphLoading, setGraphLoading] = (0, import_react7.useState)(false);
+  const [generationProgress, setGenerationProgress] = (0, import_react7.useState)(null);
   const [firstRender, setFirstRender] = (0, import_react7.useState)(true);
   const [disabled, setDisabled] = (0, import_react7.useState)(true);
   const disabledRef = (0, import_react7.useRef)(true);
   const root = (app == null ? void 0 : app.vault.adapter) instanceof import_obsidian2.FileSystemAdapter ? app.vault.adapter.getBasePath().replaceAll("\\", "/") : "/";
   const onNodeClickCallback = async (node2) => {
     let ignoreResults = false;
-    if (type === "file") {
-      setDisabled(true);
-      const active = selectedFile;
-      if (suggested.length > 0)
-        setSuggested([]);
-      const fetchBody = {
-        repo: {
-          path: root,
-          type: "Notes"
-        },
-        id: node2.data().id
-      };
-      await fetchData(
-        "http://localhost:8000/knowledge_base/notes/node_to_sentences",
-        fetchBody
-      ).then((data2) => {
-        var _a2, _b2;
-        const selections = [];
-        data2.forEach((element) => {
-          var _a3, _b3;
-          selections.push(
-            getEditorPosition_default(
-              ((_b3 = (_a3 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a3.editor) == null ? void 0 : _b3.getValue()) || "",
-              element.content
-            )
-          );
-        });
-        if (active === selectedFile && !ignoreResults && selections.length > 0)
-          (_b2 = (_a2 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a2.editor) == null ? void 0 : _b2.setSelections(
-            selections
-          );
-      }).catch(() => {
-        new import_obsidian2.Notice(fetchFailed);
+    setDisabled(true);
+    const active = selectedFile;
+    if (suggested.length > 0)
+      setSuggested([]);
+    const fetchBody = {
+      repo: {
+        path: root,
+        type: "Notes"
+      },
+      id: node2.data().id
+    };
+    await fetchData(
+      "http://localhost:8000/knowledge_base/notes/node_to_sentences",
+      fetchBody
+    ).then((data2) => {
+      var _a2, _b2;
+      const selections = [];
+      data2.forEach((element) => {
+        var _a3, _b3;
+        selections.push(
+          getEditorPosition_default(
+            ((_b3 = (_a3 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a3.editor) == null ? void 0 : _b3.getValue()) || "",
+            element.content
+          )
+        );
       });
-      setDisabled(false);
-    }
+      if (active === selectedFile && !ignoreResults && selections.length > 0)
+        (_b2 = (_a2 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a2.editor) == null ? void 0 : _b2.setSelections(
+          selections
+        );
+    }).catch(() => {
+      new import_obsidian2.Notice(fetchFailed);
+    });
+    setDisabled(false);
     return () => {
       ignoreResults = true;
     };
@@ -55925,7 +56035,36 @@ var Main = () => {
       eventRefs.forEach((ref) => app == null ? void 0 : app.workspace.offref(ref));
     };
   }, []);
+  (0, import_react7.useEffect)(() => {
+    if (!graphLoading) {
+      setGenerationProgress((prev) => prev ? { ...prev, percent: 100 } : null);
+      const timer = setTimeout(() => setGenerationProgress(null), 3e3);
+      return () => clearTimeout(timer);
+    }
+    const interval = setInterval(async () => {
+      if (!selectedFile) return;
+      try {
+        const result = await fetchData(
+          "http://localhost:8000/knowledge_base/notes/generation_progress?path=" + encodeURIComponent(root + "/" + selectedFile),
+          void 0,
+          "GET"
+        );
+        if ((result == null ? void 0 : result.status) === "generating") {
+          setGenerationProgress({ current: result.current, total: result.total, percent: result.percent });
+        }
+      } catch {}
+    }, 2e3);
+    return () => clearInterval(interval);
+  }, [graphLoading, selectedFile]);
   return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(Container, { children: [
+    (graphLoading || generationProgress !== null) && /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(GenerationBanner, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(GenerationRow, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingIcon2, {}),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(GenerationText, { children: "Generating knowledge graph\u2026" }),
+        generationProgress && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(GenerationPercent, { children: generationProgress.percent + "%" })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(GenerationProgressBar, { $percent: (generationProgress == null ? void 0 : generationProgress.percent) ?? 0 })
+    ] }),
     disabled && !graphLoading && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(GlobalLoadingContainer, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingIcon2, {}) }),
     /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
       Graph_default,
@@ -55935,8 +56074,7 @@ var Main = () => {
         visible: !graphLoading,
         disabled
       }
-    ),
-    graphLoading && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingContainer, { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(LoadingIcon2, {}) })
+    )
   ] });
 };
 var Main_default = Main;

@@ -53,13 +53,15 @@ class CollectionManager:
     def add_file(self: CollectionManager, file_path: Union[str, os.PathLike]) -> None:
         text = pathlib.Path(file_path).read_text()
         sentences = nltk.tokenize.sent_tokenize(text)
-        text_len = len(sentences)
-        sent_ids = [f"{file_path}_{str(ind)}" for ind in range(text_len)]
-        self.collection.add(
-            documents=sentences,
-            metadatas=[{"file_path": str(file_path)}] * text_len,
-            ids=sent_ids
-        )
+        batch_size = 15
+        for start in range(0, len(sentences), batch_size):
+            batch = sentences[start:start + batch_size]
+            batch_ids = [f"{file_path}_{start + j}" for j in range(len(batch))]
+            self.collection.upsert(
+                documents=batch,
+                metadatas=[{"file_path": str(file_path)}] * len(batch),
+                ids=batch_ids
+            )
         return
 
     def delete_file(self: CollectionManager, file_path: Union[str, os.PathLike]) -> None:

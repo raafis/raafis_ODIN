@@ -13,6 +13,12 @@ from langchain.schema import (
 
 from core.knowledgebase import constants
 
+_generation_progress: dict = {}
+
+
+def get_generation_progress(file_path: str) -> dict | None:
+    return _generation_progress.get(file_path, None)
+
 
 class TextAnalizer:
     def __init__(self: TextAnalizer) -> None:
@@ -143,7 +149,9 @@ class TextAnalizer:
             elif line.startswith("REL|"):
                 parts = line.split("|", 4)
                 if len(parts) >= 4:
-                    _, src, rel_type, dst = parts[0], parts[1], parts[2], parts[3]
+                    _, src, rel_type = parts[0], parts[1], parts[2]
+                    # Handle malformed 5-part lines: REL|From|TYPE|Label|To → use last part as dst
+                    dst = parts[4] if len(parts) == 5 else parts[3]
                     src = normalize(src)
                     rel_type = rel_type.strip().upper().replace(" ", "_")
                     dst = normalize(dst)
@@ -151,7 +159,8 @@ class TextAnalizer:
                         rel_entries.append((src, rel_type, dst))
 
         valid_rels = [
-            f"MATCH (a {{name: '{safe(src)}'}}), (b {{name: '{safe(dst)}'}}) "
+            f"MATCH (a {{name: '{safe(src)}', file_path: '{safe(file_path)}'}}), "
+            f"(b {{name: '{safe(dst)}', file_path: '{safe(file_path)}'}}) "
             f"MERGE (a)-[:{rel_type}]->(b)"
             for src, rel_type, dst in rel_entries
             if src in defined_names and dst in defined_names
@@ -166,13 +175,24 @@ class TextAnalizer:
         "REL|FromName|RELATIONSHIP_TYPE|ToName"
     )
 
+    def _stream_raw(self: TextAnalizer, file_path: str) -> str:
+        raw = ""
+        # Resume from current value so retries don't reset the counter backwards.
+        token_count = _generation_progress.get(file_path, {}).get("chunk_tokens", 0)
+        for token in self.kg_model.stream(self.messages):
+            raw += token.content
+            token_count += 1
+            if file_path in _generation_progress:
+                _generation_progress[file_path]["chunk_tokens"] = token_count
+        return raw
+
     def _invoke_with_retry(self: TextAnalizer, repo_path: str, file_path: str) -> str:
-        raw = self.kg_model.invoke(self.messages).content
+        raw = self._stream_raw(file_path)
         print(f"KG raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
         result = self._parse_kg_output(raw, repo_path, file_path)
         if not result:
             self.messages += [AIMessage(content=raw), HumanMessage(content=self._RETRY_MSG)]
-            raw = self.kg_model.invoke(self.messages).content
+            raw = self._stream_raw(file_path)
             print(f"KG retry raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
             result = self._parse_kg_output(raw, repo_path, file_path)
         return result
@@ -218,25 +238,39 @@ class TextAnalizer:
 
     def text_to_cypher_chunked(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
         chunks = self._split_into_chunks(text)
-        if len(chunks) == 1:
-            return self.text_to_cypher_create(chunks[0], repo_path, file_path)
-        print(f"Chunked extraction: {len(chunks)} chunks for {file_path}", flush=True)
-        accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path)
-        for i, chunk in enumerate(chunks[1:], 2):
-            print(f"Chunk {i}/{len(chunks)}", flush=True)
-            existing_names = self._names_from_cypher(accumulated)
-            context = "\n".join(f"- {n}" for n in existing_names)
-            self.messages = [
-                SystemMessage(content=self._KG_SYSTEM),
-                HumanMessage(content=(
-                    f"Nodes already extracted — do NOT output these again:\n{context}\n\n"
-                    f"Passage:\n{chunk}"
-                ))
-            ]
-            update = self._invoke_with_retry(repo_path, file_path)
-            if update.strip():
-                accumulated = accumulated + "\n" + update
-        return accumulated
+        total = len(chunks)
+        _generation_progress[file_path] = {"current": 0, "total": total, "chunk_tokens": 0}
+        print(f"Chunked extraction: {total} chunks for {file_path}", flush=True)
+
+        try:
+            if total == 1:
+                result = self.text_to_cypher_create(chunks[0], repo_path, file_path)
+                return result
+
+            accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path)
+            _generation_progress[file_path]["current"] = 1
+            _generation_progress[file_path]["chunk_tokens"] = 0
+
+            for i, chunk in enumerate(chunks[1:], 2):
+                print(f"Chunk {i}/{total}", flush=True)
+                existing_names = self._names_from_cypher(accumulated)
+                context = "\n".join(f"- {n}" for n in existing_names)
+                self.messages = [
+                    SystemMessage(content=self._KG_SYSTEM),
+                    HumanMessage(content=(
+                        f"Nodes already extracted — do NOT output these again:\n{context}\n\n"
+                        f"Passage:\n{chunk}"
+                    ))
+                ]
+                update = self._invoke_with_retry(repo_path, file_path)
+                if update.strip():
+                    accumulated = accumulated + "\n" + update
+                _generation_progress[file_path]["current"] = i
+                _generation_progress[file_path]["chunk_tokens"] = 0
+
+            return accumulated
+        finally:
+            _generation_progress.pop(file_path, None)
 
     def generate_questions(self: TextAnalizer, text: str) -> str:
         self.messages = [

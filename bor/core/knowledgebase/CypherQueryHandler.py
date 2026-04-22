@@ -46,8 +46,8 @@ class CypherQueryHandler:
     @staticmethod
     def get_strings_to_embed_query(file_path: str) -> str:
         return (f"MATCH (n) "
-                f"OPTIONAL MATCH (n)-[r]->(m) "
                 f"WHERE n.file_path = '{file_path}' "
+                f"OPTIONAL MATCH (n)-[r]->(m) "
                 f"RETURN ID(n) as Node_ID, "
                 f"n.name as Node_Name, "
                 f"labels(n)[0] as Node_Type, "

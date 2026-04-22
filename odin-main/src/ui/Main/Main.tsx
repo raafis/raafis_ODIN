@@ -27,6 +27,7 @@ const Main: React.FC = (): React.JSX.Element => {
 		app?.workspace.activeEditor?.file?.path || ""
 	);
 	const [graphLoading, setGraphLoading] = useState<boolean>(false);
+	const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; percent: number } | null>(null);
 	const [firstRender, setFirstRender] = useState<boolean>(true);
 	const [disabled, setDisabled] = useState<boolean>(true);
 	const disabledRef = useRef<boolean>(true);
@@ -336,8 +337,42 @@ const Main: React.FC = (): React.JSX.Element => {
 		};
 	}, []);
 
+	useEffect(() => {
+		if (!graphLoading) {
+			setGenerationProgress(prev => prev ? { ...prev, percent: 100 } : null);
+			const timer = setTimeout(() => setGenerationProgress(null), 3000);
+			return () => clearTimeout(timer);
+		}
+		const interval = setInterval(async () => {
+			if (!selectedFile) return;
+			try {
+				const result = await fetchData(
+					`http://localhost:8000/knowledge_base/notes/generation_progress?path=${encodeURIComponent(root + "/" + selectedFile)}`,
+					undefined,
+					"GET"
+				);
+				if (result?.status === "generating") {
+					setGenerationProgress({ current: result.current, total: result.total, percent: result.percent });
+				}
+			} catch { /* ignore */ }
+		}, 2000);
+		return () => clearInterval(interval);
+	}, [graphLoading, selectedFile]);
+
 	return (
 		<S.Container>
+			{(graphLoading || generationProgress !== null) && (
+				<S.GenerationBanner>
+					<S.GenerationRow>
+						<S.LoadingIcon />
+						<S.GenerationText>Generating knowledge graph…</S.GenerationText>
+						{generationProgress && (
+							<S.GenerationPercent>{generationProgress.percent}%</S.GenerationPercent>
+						)}
+					</S.GenerationRow>
+					<S.GenerationProgressBar $percent={generationProgress?.percent ?? 0} />
+				</S.GenerationBanner>
+			)}
 			{disabled && !graphLoading && (
 				<S.GlobalLoadingContainer>
 					<S.LoadingIcon />
@@ -349,11 +384,6 @@ const Main: React.FC = (): React.JSX.Element => {
 				visible={!graphLoading}
 				disabled={disabled}
 			/>
-			{graphLoading && (
-				<S.LoadingContainer>
-					<S.LoadingIcon />
-				</S.LoadingContainer>
-			)}
 		</S.Container>
 	);
 };

@@ -201,6 +201,16 @@ class MemgraphManager:
         row = next(res, None)
         return row['embeddings'] if row else None
 
+    def get_node_name(self: MemgraphManager, node_id: int) -> Optional[str]:
+        res = self.db.execute_and_fetch(f"MATCH (n) WHERE id(n) = {node_id} RETURN n.name AS name")
+        row = next(res, None)
+        return row['name'] if row else None
+
+    def get_node_file_path(self: MemgraphManager, node_id: int) -> Optional[str]:
+        res = self.db.execute_and_fetch(f"MATCH (n) WHERE id(n) = {node_id} RETURN n.file_path AS file_path")
+        row = next(res, None)
+        return row['file_path'] if row else None
+
 
 if __name__ == '__main__':
     arch = MemgraphManager()

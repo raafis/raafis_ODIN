@@ -74,6 +74,9 @@ export const GraphStyle = [
     {
         selector: "edge:selected",
         style: {
+            width: 3,
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
             label: "data(fullLabel)",
             "text-wrap": "wrap",
             "text-max-width": "150px",
@@ -92,6 +95,20 @@ export const GraphStyle = [
             width: 3,
             "line-color": theme.colors["accent-light"],
             "target-arrow-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "edge.edge-active",
+        style: {
+            width: 3,
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: ".dimmed",
+        style: {
+            opacity: 0.25,
         },
     },
 ]

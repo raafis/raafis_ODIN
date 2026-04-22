@@ -51,10 +51,20 @@ class Searcher:
         return '\n'.join(self.search_text(query_text=query))
 
     def node_id_to_sentences(self: Searcher, id: int) -> List[str]:
-        emb = self.mm.embeddings_for_node(id)
-        if not emb:
+        import pathlib
+        import nltk
+        node_name = self.mm.get_node_name(id)
+        file_path = self.mm.get_node_file_path(id)
+        if not node_name or not file_path:
             return []
-        return self.search_text(query_embeddings=emb)
+        try:
+            text = pathlib.Path(file_path).read_text(errors="ignore")
+            sentences = nltk.tokenize.sent_tokenize(text)
+            name_lower = node_name.lower()
+            matches = [s for s in sentences if name_lower in s.lower()]
+            return matches[:3] if matches else []
+        except Exception:
+            return []
 
     def sentence_to_node_ids(self: Searcher, sentence: str) -> List[int]:
         cm = CollectionManager(self.repo_path)
