@@ -33,7 +33,7 @@ class TextAnalizer:
         self.kg_model = ChatOllama(
             model=constants.LLM_MODEL_NAME,
             base_url=constants.OLLAMA_BASE_URL,
-            temperature=0.3,
+            temperature=0.4,
             num_predict=1024,
         )
 
@@ -85,12 +85,16 @@ class TextAnalizer:
         "   WRONG: 'Law enforcement could compel Discord to intercept a call'\n"
         "   RIGHT:  NODE|Role|Law Enforcement  and  NODE|Concept|Court Order\n"
         "3. No markdown, no code, no explanations, no blank lines — only NODE and REL lines.\n"
-        "4. REL FromName and ToName MUST both be names that appear as NODE lines in this same output.\n"
-        "   If a concept is worth mentioning in a REL, declare it as a NODE first.\n"
+        "4. REL FromName and ToName MUST use the EXACT same Name as a declared NODE — character for character.\n"
+        "   NEVER use a new phrase in a REL that was not already declared as a NODE line.\n"
+        "   WRONG: REL|Node 33|RECEIVED|7 nominations  ('7 nominations' was never a NODE)\n"
+        "   RIGHT:  NODE|Entity|Friendship Nominations  then  REL|Node 33|RECEIVED|Friendship Nominations\n"
         "   WRONG: REL|Reciprocity|DEFINED_BY|(number of reciprocated arcs) / (total arcs)\n"
         "   RIGHT:  NODE|Process|Reciprocity Ratio  then  REL|Reciprocity|DEFINED_BY|Reciprocity Ratio\n"
         "5. Extract ALL relationships — for every meaningful connection between two entities in the passage, output a REL line.\n"
-        "6. Only extract relationships explicitly stated in the passage — do NOT infer or imply connections.\n\n"
+        "6. Only extract relationships explicitly stated in the passage — do NOT infer or imply connections.\n"
+        "7. When text gives specific examples using 'such as', 'including', 'like', or 'e.g.', create a NODE for EACH listed example AND for the parent category if named (e.g., 'behaviour, such as smoking or sport participation' → NODE Behaviour, NODE Smoking, NODE Sport Participation).\n"
+        "8. When in doubt, include rather than omit — extract every explicitly named entity or concept, even if it seems secondary.\n\n"
         "EXAMPLE output for a passage about Napoleon:\n"
         "NODE|Role|Napoleon\n"
         "NODE|Process|Liberal Reforms\n"
@@ -198,7 +202,7 @@ class TextAnalizer:
         return result
 
     @staticmethod
-    def _split_into_chunks(text: str, max_chars: int = 3000) -> list:
+    def _split_into_chunks(text: str, max_chars: int = 1500) -> list:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         chunks, current, current_len = [], [], 0
         for para in paragraphs:

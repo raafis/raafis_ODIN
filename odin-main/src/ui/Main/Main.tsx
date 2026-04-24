@@ -244,7 +244,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						"http://localhost:8000/knowledge_base/notes/add_file",
 						{ path: root + "/" + selectedFile, type: "Notes", content: "" },
 						"PUT",
-						300000
+						900000
 					).catch(() => {});
 					const newData = await fetchGraphData(root, selectedFile, ignoreResults, suggested)
 						.catch(() => ({ nodes: [], edges: [] }));
@@ -352,7 +352,10 @@ const Main: React.FC = (): React.JSX.Element => {
 					"GET"
 				);
 				if (result?.status === "generating") {
-					setGenerationProgress({ current: result.current, total: result.total, percent: result.percent });
+					setGenerationProgress(prev => {
+						if (prev && result.percent < prev.percent) return prev;
+						return { current: result.current, total: result.total, percent: result.percent };
+					});
 				}
 			} catch { /* ignore */ }
 		}, 2000);

@@ -55959,7 +55959,7 @@ var Main = () => {
       if (data2.nodes.length === 0 && selectedFile) {
         setGraphLoading(true);
         new import_obsidian2.Notice("Generating knowledge graph\u2026");
-        await fetchData("http://localhost:8000/knowledge_base/notes/add_file", { path: root + "/" + selectedFile, type: "Notes", content: "" }, "PUT", 300000).catch(() => {});
+        await fetchData("http://localhost:8000/knowledge_base/notes/add_file", { path: root + "/" + selectedFile, type: "Notes", content: "" }, "PUT", 900000).catch(() => {});
         const newData = await fetchGraphData(root, selectedFile, ignoreResults, suggested).catch(() => ({ nodes: [], edges: [] }));
         setData(newData);
       } else {
@@ -56050,7 +56050,10 @@ var Main = () => {
           "GET"
         );
         if ((result == null ? void 0 : result.status) === "generating") {
-          setGenerationProgress({ current: result.current, total: result.total, percent: result.percent });
+          setGenerationProgress((prev) => {
+            if (prev && result.percent < prev.percent) return prev;
+            return { current: result.current, total: result.total, percent: result.percent };
+          });
         }
       } catch {}
     }, 2e3);
