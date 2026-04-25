@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import cytoscape, { NodeSingular } from "cytoscape";
+import coseBilkent from "cytoscape-cose-bilkent";
+cytoscape.use(coseBilkent);
 import { GraphContainer, GraphStyle } from "./Graph.styles";
 import { Node, Edge } from "../../shared/types/graphTypes";
-import { LAYOUT } from "../../shared/constants";
+import { LAYOUT_OPTIONS } from "../../shared/constants";
 import { useApp } from "../hooks/useApp";
 
 interface GraphProps {
@@ -13,6 +15,7 @@ interface GraphProps {
 	nodeClickCallback?: (node: NodeSingular) => void;
 	visible: boolean;
 	disabled: boolean;
+	filePath: string;
 }
 
 const Graph: React.FC<GraphProps> = ({
@@ -20,17 +23,23 @@ const Graph: React.FC<GraphProps> = ({
 	nodeClickCallback,
 	visible,
 	disabled,
+	filePath,
 }) => {
 	const [selected, setSelected] = useState<string | undefined>(undefined);
 	const [activeNodeId, setActiveNodeId] = useState<string | undefined>(undefined);
 	const activeNodeIdRef = useRef<string | undefined>(undefined);
 	const cyRef = useRef<cytoscape.Core | null>(null);
+	const positionCacheRef = useRef<Map<string, Record<string, { x: number; y: number }>>>(new Map());
+	const filePathRef = useRef<string>(filePath);
+	const cacheKeyRef = useRef<string>("");
 	const app = useApp();
+
+	useEffect(() => { filePathRef.current = filePath; }, [filePath]);
 
 	app?.workspace.onLayoutReady(() => {
 		app.workspace.on("resize", () => {
 			if (cyRef.current) {
-				cyRef.current.layout({ name: LAYOUT }).run();
+				cyRef.current.fit(undefined, 30);
 			}
 		});
 	});
@@ -59,12 +68,15 @@ const Graph: React.FC<GraphProps> = ({
 			const node = event.target;
 			node.addClass("hovered");
 			node.outgoers("edge").addClass("hovered");
+			node.incomers("edge").addClass("hovered-incoming");
+			node.outgoers("node").addClass("hover-neighbor-outgoing");
+			node.incomers("node").addClass("hover-neighbor-incoming");
 			const currentActiveId = activeNodeIdRef.current;
-			let excluded = node.union(node.outgoers("edge"));
+			let excluded = node.union(node.connectedEdges()).union(node.outgoers("node")).union(node.incomers("node"));
 			if (currentActiveId) {
 				const activeNode = cyRef.current?.$id(currentActiveId);
 				if (activeNode?.length) {
-					excluded = excluded.union(activeNode).union(activeNode.outgoers("edge"));
+					excluded = excluded.union(activeNode).union(activeNode.connectedEdges()).union(activeNode.outgoers("node")).union(activeNode.incomers("node"));
 				}
 			}
 			cyRef.current?.elements().not(excluded).addClass("dimmed");
@@ -73,6 +85,9 @@ const Graph: React.FC<GraphProps> = ({
 			const node = event.target;
 			node.removeClass("hovered");
 			node.outgoers("edge").removeClass("hovered");
+			node.incomers("edge").removeClass("hovered-incoming");
+			node.outgoers("node").removeClass("hover-neighbor-outgoing");
+			node.incomers("node").removeClass("hover-neighbor-incoming");
 			cyRef.current?.elements().removeClass("dimmed");
 			const currentActiveId = activeNodeIdRef.current;
 			if (currentActiveId) {
@@ -80,7 +95,9 @@ const Graph: React.FC<GraphProps> = ({
 				if (activeNode?.length) {
 					cyRef.current?.elements()
 						.not(activeNode)
-						.not(activeNode.outgoers("edge"))
+						.not(activeNode.connectedEdges())
+						.not(activeNode.outgoers("node"))
+						.not(activeNode.incomers("node"))
 						.addClass("dimmed");
 				}
 			}
@@ -130,12 +147,7 @@ const Graph: React.FC<GraphProps> = ({
 			container: document.getElementById("cy"),
 			elements: { nodes: [], edges: [] },
 			style: GraphStyle,
-			layout: {
-				name: LAYOUT,
-				fit: true,
-				padding: 150,
-				spacingFactor: 150,
-			},
+			layout: LAYOUT_OPTIONS,
 			minZoom: 0.3,
 			maxZoom: 2,
 		});
@@ -145,6 +157,16 @@ const Graph: React.FC<GraphProps> = ({
 		registerClickHandler();
 		registerHoverHandler();
 
+		cyRef.current?.on("dragfree", "node", () => {
+			const positions: Record<string, { x: number; y: number }> = {};
+			cyRef.current?.nodes().forEach(node => { positions[node.id()] = node.position(); });
+			positionCacheRef.current.set(cacheKeyRef.current, positions);
+			const fp = filePathRef.current;
+			if (fp) {
+				localStorage.setItem(`odin_graph_positions_${fp}`, JSON.stringify(positions));
+			}
+		});
+
 		return () => {
 			console.log("destroy");
 			cyRef.current?.destroy();
@@ -152,17 +174,47 @@ const Graph: React.FC<GraphProps> = ({
 	}, []);
 
 	useEffect(() => {
-		console.log("refreshing");
 		const refreshGraph = () => {
 			if (cyRef.current) {
+				const cacheKey = data.nodes.map(n => n.data.id).sort().join(",");
+				cacheKeyRef.current = cacheKey;
+				let cached = positionCacheRef.current.get(cacheKey);
+
+				if (!cached && filePath) {
+					const stored = localStorage.getItem(`odin_graph_positions_${filePath}`);
+					if (stored) {
+						try {
+							const parsed: Record<string, { x: number; y: number }> = JSON.parse(stored);
+							const currentIds = new Set(data.nodes.map(n => n.data.id));
+							const overlap = Object.keys(parsed).filter(id => currentIds.has(id)).length;
+							if (currentIds.size > 0 && overlap / currentIds.size >= 0.5) {
+								cached = parsed;
+								positionCacheRef.current.set(cacheKey, cached);
+							}
+						} catch { /* ignore corrupt data */ }
+					}
+				}
+
 				cyRef.current.elements().remove();
 				cyRef.current.add([...data.nodes, ...data.edges]);
-				cyRef.current.layout({ name: LAYOUT }).run();
+
+				if (cached && data.nodes.length > 0) {
+					cyRef.current.layout({ name: "preset", positions: cached, fit: true, padding: 30 }).run();
+				} else {
+					cyRef.current.layout(LAYOUT_OPTIONS).run();
+					if (data.nodes.length > 0) {
+						const positions: Record<string, { x: number; y: number }> = {};
+						cyRef.current.nodes().forEach(node => { positions[node.id()] = node.position(); });
+						positionCacheRef.current.set(cacheKey, positions);
+						if (filePath) {
+							localStorage.setItem(`odin_graph_positions_${filePath}`, JSON.stringify(positions));
+						}
+					}
+				}
 			}
 			cyRef.current?.resize();
 		};
 
-		console.log("refresh");
 		refreshGraph();
 		setActiveNodeId(undefined);
 	}, [data]);
@@ -185,16 +237,22 @@ const Graph: React.FC<GraphProps> = ({
 
 	useEffect(() => {
 		if (cyRef.current) {
-			cyRef.current.edges().removeClass("edge-active");
+			cyRef.current.edges().removeClass("edge-active edge-active-incoming");
+			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
 			cyRef.current.elements().removeClass("dimmed");
 			if (activeNodeId) {
 				const activeNode = cyRef.current.$id(activeNodeId);
 				if (activeNode.length) {
 					activeNodeIdRef.current = activeNodeId;
 					activeNode.outgoers("edge").addClass("edge-active");
+					activeNode.incomers("edge").addClass("edge-active-incoming");
+					activeNode.outgoers("node").addClass("active-neighbor-outgoing");
+					activeNode.incomers("node").addClass("active-neighbor-incoming");
 					cyRef.current.elements()
 						.not(activeNode)
-						.not(activeNode.outgoers("edge"))
+						.not(activeNode.connectedEdges())
+						.not(activeNode.outgoers("node"))
+						.not(activeNode.incomers("node"))
 						.addClass("dimmed");
 				}
 			} else {

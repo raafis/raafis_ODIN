@@ -33,7 +33,7 @@ class TextAnalizer:
         self.kg_model = ChatOllama(
             model=constants.LLM_MODEL_NAME,
             base_url=constants.OLLAMA_BASE_URL,
-            temperature=0.4,
+            temperature=0.1,
             num_predict=1024,
         )
 
@@ -167,7 +167,6 @@ class TextAnalizer:
             f"(b {{name: '{safe(dst)}', file_path: '{safe(file_path)}'}}) "
             f"MERGE (a)-[:{rel_type}]->(b)"
             for src, rel_type, dst in rel_entries
-            if src in defined_names and dst in defined_names
         ]
 
         return "\n".join(node_lines + valid_rels)

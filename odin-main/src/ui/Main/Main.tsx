@@ -189,11 +189,15 @@ const Main: React.FC = (): React.JSX.Element => {
 					return;
 				}
 				try {
+					setGraphLoading(true);
+					new Notice("Generating knowledge graph…");
 					await fetchData(
-						"http://localhost:8000/knowledge_base/notes/delete_file",
+						"http://localhost:8000/knowledge_base/notes/update_file",
 						{ path: root + "/" + filePath, type: "Notes", content: "" },
-						"DELETE"
-					);
+						"PUT",
+						900000
+					).catch(() => {});
+					setGraphLoading(false);
 					setSelectedFile("");
 					setTimeout(() => setSelectedFile(filePath), 100);
 				} catch {
@@ -236,22 +240,8 @@ const Main: React.FC = (): React.JSX.Element => {
 		if (reload) setGraphLoading(true);
 
 		await fetchGraphData(root, selectedFile, ignoreResults, suggested)
-			.then(async (data) => {
-				if (data.nodes.length === 0 && type === "file" && selectedFile) {
-					setGraphLoading(true);
-					new Notice("Generating knowledge graph…");
-					await fetchData(
-						"http://localhost:8000/knowledge_base/notes/add_file",
-						{ path: root + "/" + selectedFile, type: "Notes", content: "" },
-						"PUT",
-						900000
-					).catch(() => {});
-					const newData = await fetchGraphData(root, selectedFile, ignoreResults, suggested)
-						.catch(() => ({ nodes: [], edges: [] }));
-					setData(newData);
-				} else {
-					setData(data);
-				}
+			.then((data) => {
+				setData(data);
 			})
 			.catch(() => {
 				new Notice(Messages.fetchFailed);
@@ -386,6 +376,7 @@ const Main: React.FC = (): React.JSX.Element => {
 				nodeClickCallback={onNodeClickCallback}
 				visible={!graphLoading}
 				disabled={disabled}
+				filePath={selectedFile}
 			/>
 		</S.Container>
 	);
