@@ -15,7 +15,7 @@ from core.knowledgebase import constants
 
 from core.knowledgebase.Initializer import Initializer
 from core.knowledgebase.MemgraphManager import MemgraphManager
-from core.knowledgebase.TextAnalizer import TextAnalizer, get_generation_progress
+from core.knowledgebase.TextAnalizer import TextAnalizer, get_generation_progress, cancel_generation_progress
 from core.knowledgebase.QueryAgents import NotesQueryAgent, CodeQueryAgent
 
 from core.knowledgebase.notes.VaultManager import VaultManager
@@ -66,6 +66,12 @@ class Node(BaseModel):
 class Sentence(BaseModel):
     repo: Repo
     content: str
+
+
+class EdgeQuery(BaseModel):
+    repo: Repo
+    src_id: int
+    dst_id: int
 
 
 class Paragraph(BaseModel):
@@ -208,11 +214,10 @@ def update_file(file: File) -> None:
         else:
             print(f"WARN: KG extraction returned nothing for {file.path} — keeping existing graph")
 
-    # Ensure every node from this file has repo_path and file_path set
-    mm.db.execute(
-        f"MATCH (n) WHERE n.file_path IS NULL "
-        f"SET n.file_path = '{file.path}', n.repo_path = '{repo_path}'"
-    )
+    try:
+        mm.db.execute("MATCH (n) WHERE n.file_path IS NULL DETACH DELETE n")
+    except Exception as e:
+        print(f"WARN: post-processing delete failed: {e}")
 
     try:
         cm.add_file(file.path)
@@ -243,6 +248,11 @@ def generation_progress(path: str):
     return {"status": "generating", "percent": percent}
 
 
+@app.post("/knowledge_base/notes/cancel_generation")
+def cancel_generation_api(path: str) -> None:
+    cancel_generation_progress(path)
+
+
 # TODO: test with GPT4
 
 
@@ -268,11 +278,10 @@ def add_file(file: File) -> None:
         res_queries = ta.text_to_cypher_chunked(content, repo_path, file.path)
         mm.run_update_query(res_queries)
 
-    # Ensure every node from this file has repo_path and file_path set
-    mm.db.execute(
-        f"MATCH (n) WHERE n.file_path IS NULL "
-        f"SET n.file_path = '{file.path}', n.repo_path = '{repo_path}'"
-    )
+    try:
+        mm.db.execute("MATCH (n) WHERE n.file_path IS NULL DETACH DELETE n")
+    except Exception as e:
+        print(f"WARN: post-processing delete failed: {e}")
 
     try:
         cm.add_file(file.path)
@@ -311,6 +320,12 @@ def rename_file(old_file: File, new_file: File) -> None:
 def node_to_sentences(node: Node) -> List[Sentence]:
     searcher = Searcher(node.repo.path)
     return [Sentence(repo=node.repo, content=c) for c in searcher.node_id_to_sentences(node.id)]
+
+
+@app.post("/knowledge_base/notes/edge_to_sentences")
+def edge_to_sentences(edge: EdgeQuery) -> List[Sentence]:
+    searcher = Searcher(edge.repo.path)
+    return [Sentence(repo=edge.repo, content=c) for c in searcher.edge_id_to_sentences(edge.src_id, edge.dst_id)]
 
 
 @app.post("/knowledge_base/notes/sentence_to_nodes")

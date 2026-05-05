@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import cytoscape, { NodeSingular } from "cytoscape";
+import cytoscape, { EdgeSingular, NodeSingular } from "cytoscape";
 import coseBilkent from "cytoscape-cose-bilkent";
 cytoscape.use(coseBilkent);
 import { GraphContainer, GraphStyle } from "./Graph.styles";
@@ -13,6 +13,7 @@ interface GraphProps {
 		edges: Edge[];
 	};
 	nodeClickCallback?: (node: NodeSingular) => void;
+	edgeClickCallback?: (edge: EdgeSingular) => void;
 	visible: boolean;
 	disabled: boolean;
 	filePath: string;
@@ -21,6 +22,7 @@ interface GraphProps {
 const Graph: React.FC<GraphProps> = ({
 	data,
 	nodeClickCallback,
+	edgeClickCallback,
 	visible,
 	disabled,
 	filePath,
@@ -32,9 +34,11 @@ const Graph: React.FC<GraphProps> = ({
 	const positionCacheRef = useRef<Map<string, Record<string, { x: number; y: number }>>>(new Map());
 	const filePathRef = useRef<string>(filePath);
 	const cacheKeyRef = useRef<string>("");
+	const edgeClickCallbackRef = useRef(edgeClickCallback);
 	const app = useApp();
 
 	useEffect(() => { filePathRef.current = filePath; }, [filePath]);
+	useEffect(() => { edgeClickCallbackRef.current = edgeClickCallback; });
 
 	app?.workspace.onLayoutReady(() => {
 		app.workspace.on("resize", () => {
@@ -156,6 +160,11 @@ const Graph: React.FC<GraphProps> = ({
 		registerNodeClickHandler();
 		registerClickHandler();
 		registerHoverHandler();
+
+		cyRef.current?.on("click", "edge", (event: cytoscape.EventObject) => {
+			console.log("[ODIN] edge clicked in Graph, target:", event.target.id(), "callback:", !!edgeClickCallbackRef.current);
+			edgeClickCallbackRef.current?.(event.target);
+		});
 
 		cyRef.current?.on("dragfree", "node", () => {
 			const positions: Record<string, { x: number; y: number }> = {};

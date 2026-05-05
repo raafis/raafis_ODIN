@@ -88,9 +88,30 @@ class MemgraphManager:
         return Utils.results_to_dictlist(res, 'repo_specific_subgraph')
 
     def export_data_for_file_path(self: MemgraphManager, file_path: str) -> List[Dict[str, Any]]:
-        query = CQ.get_export_for_file_path_query(file_path)
-        res = self.db.execute_and_fetch(query)
-        return Utils.results_to_dictlist(res, 'file_specific_subgraph')
+        nodes_res = self.db.execute_and_fetch(CQ.get_nodes_for_file_path_query(file_path))
+        nodes = []
+        for row in nodes_res:
+            n = row['n']
+            props = {k: v for k, v in (n._properties or {}).items() if k != 'embeddings'}
+            nodes.append({
+                "id": n._id,
+                "labels": list(n._labels),
+                "properties": props,
+                "type": "node",
+            })
+        edges_res = self.db.execute_and_fetch(CQ.get_edges_for_file_path_query(file_path))
+        edges = []
+        for row in edges_res:
+            r = row['r']
+            edges.append({
+                "id": r._id,
+                "start": r._start_node_id,
+                "end": r._end_node_id,
+                "label": r._type,
+                "properties": dict(r._properties or {}),
+                "type": "relationship",
+            })
+        return nodes + edges
 
     def delete_all(self: MemgraphManager) -> None:
         query = CQ.get_delete_all_query()
@@ -210,6 +231,14 @@ class MemgraphManager:
         res = self.db.execute_and_fetch(f"MATCH (n) WHERE id(n) = {node_id} RETURN n.file_path AS file_path")
         row = next(res, None)
         return row['file_path'] if row else None
+
+    def get_node_source_sentences(self: MemgraphManager, node_id: int) -> List[str]:
+        res = self.db.execute_and_fetch(
+            f"MATCH (n) WHERE id(n) = {node_id} RETURN n.source_sentences AS ss"
+        )
+        row = next(res, None)
+        val = row.get('ss') if row else None
+        return list(val) if val else []
 
 
 if __name__ == '__main__':

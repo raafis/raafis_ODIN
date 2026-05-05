@@ -15,10 +15,13 @@ class CypherQueryHandler:
                 f"RETURN repo_specific_subgraph")
 
     @staticmethod
-    def get_export_for_file_path_query(file_path: str) -> str:
-        return (f"MATCH p=(n {{ file_path: '{file_path}' }})-[r]->(m {{ file_path: '{file_path}' }}) "
-                f"WITH project(p) AS file_specific_subgraph "
-                f"RETURN file_specific_subgraph")
+    def get_nodes_for_file_path_query(file_path: str) -> str:
+        return f"MATCH (n {{ file_path: '{file_path}' }}) RETURN n"
+
+    @staticmethod
+    def get_edges_for_file_path_query(file_path: str) -> str:
+        return (f"MATCH (n {{ file_path: '{file_path}' }})-[r]->(m {{ file_path: '{file_path}' }}) "
+                f"RETURN r")
 
     @staticmethod
     def get_delete_all_query() -> str:

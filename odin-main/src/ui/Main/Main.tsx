@@ -10,11 +10,9 @@ import getEditorPosition from "src/util/getEditorPosition";
 import * as Messages from "src/shared/messages";
 import { fetchGraphData } from "./MainUtils";
 import * as Constants from "src/shared/constants";
-import { NodeSingular } from "cytoscape";
-import { AnalyticsNode } from "src/model/AnalyticsNode";
+import { EdgeSingular, NodeSingular } from "cytoscape";
 import { Selection } from "src/shared/types/Selection";
 import { Sentence } from "src/model/Sentence";
-import getFilenameFromPath from "src/util/getFilenameFromPath";
 
 const Main: React.FC = (): React.JSX.Element => {
 	const app = useApp();
@@ -22,15 +20,18 @@ const Main: React.FC = (): React.JSX.Element => {
 		nodes: [],
 		edges: [],
 	});
-	const [suggested, setSuggested] = useState<number[]>([]);
 	const [selectedFile, setSelectedFile] = useState<string>(
 		app?.workspace.activeEditor?.file?.path || ""
 	);
 	const [graphLoading, setGraphLoading] = useState<boolean>(false);
 	const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; percent: number } | null>(null);
+	const [regeneratingFile, setRegeneratingFile] = useState<string | null>(null);
 	const [firstRender, setFirstRender] = useState<boolean>(true);
 	const [disabled, setDisabled] = useState<boolean>(true);
 	const disabledRef = useRef<boolean>(true);
+	const pendingReloadRef = useRef<Set<string>>(new Set());
+	const graphCacheRef = useRef<Map<string, { nodes: Node[]; edges: Edge[] }>>(new Map());
+	const abortControllerRef = useRef<AbortController | null>(null);
 
 	const root =
 		app?.vault.adapter instanceof FileSystemAdapter
@@ -42,7 +43,6 @@ const Main: React.FC = (): React.JSX.Element => {
 		{
 			setDisabled(true);
 			const active = selectedFile;
-			if (suggested.length > 0) setSuggested([]);
 			const fetchBody = {
 				repo: {
 					path: root,
@@ -83,103 +83,74 @@ const Main: React.FC = (): React.JSX.Element => {
 		};
 	};
 
-	const predictLinks = async (file: string) => {
-		if (!app?.workspace.activeEditor?.editor?.getSelection()) {
-			new Notice(Messages.noSelectedText);
-			return;
-		}
-
+	const onEdgeClickCallback = async (edge: EdgeSingular) => {
+		if (disabled) return;
 		let ignoreResults = false;
-		const active = selectedFile;
-		setDisabled(true);
-		const fetchBody = {
-			repo: {
-				path: root,
-				type: "Notes",
-			},
-			content: app?.workspace.activeEditor?.editor?.getSelection() || "",
-		};
-		console.log(fetchBody);
-		await fetchData(
-			"http://localhost:8000/knowledge_base/notes/suggest_link",
-			fetchBody
-		)
-			.then((data) => {
-				const pos = getEditorPosition(
-					app.workspace.activeEditor?.editor?.getValue() || "",
-					app.workspace.activeEditor?.editor?.getSelection().trim() ||
-						""
-				).head;
-				pos.ch++;
+		{
+			setDisabled(true);
+			const active = selectedFile;
+			const repoBody = { path: root, type: "Notes" };
 
-				if (pos && active === selectedFile && !ignoreResults)
-					app.workspace.activeEditor?.editor?.replaceRange(
-						`[[${getFilenameFromPath(data.path).split(".")[0]}]] `,
-						pos,
-						pos
-					);
-			})
-			.catch(() => {
-				new Notice(Messages.fetchFailed);
-			});
-		setDisabled(false);
+			// Refocus the note editor before fetching — clicking the canvas steals focus
+			await app?.workspace.openLinkText("", active);
+
+			await Promise.all([
+				fetchData("http://localhost:8000/knowledge_base/notes/node_to_sentences", {
+					repo: repoBody,
+					id: edge.source().data().id,
+				}),
+				fetchData("http://localhost:8000/knowledge_base/notes/node_to_sentences", {
+					repo: repoBody,
+					id: edge.target().data().id,
+				}),
+			])
+				.then(([srcData, dstData]) => {
+					const srcContents = new Set(srcData.map((s: Sentence) => s.content));
+					const shared = dstData.filter((s: Sentence) => srcContents.has(s.content));
+					const results: Sentence[] = shared.length > 0 ? shared : [...srcData, ...dstData];
+
+					const selections: Selection[] = [];
+					results.forEach((element: Sentence) => {
+						selections.push(
+							getEditorPosition(
+								app?.workspace.activeEditor?.editor?.getValue() || "",
+								element.content
+							)
+						);
+					});
+
+					if (active === selectedFile && !ignoreResults && selections.length > 0)
+						app?.workspace.activeEditor?.editor?.setSelections(selections);
+				})
+				.catch(() => {
+					new Notice(Messages.fetchFailed);
+				});
+			setDisabled(false);
+		}
 
 		return () => {
 			ignoreResults = true;
 		};
 	};
 
-	const nodeSuggest = async (text: string) => {
-		console.log("disabled:");
-		console.log(disabledRef.current);
-		if (disabledRef.current) {
-			new Notice(Messages.loadingText);
-			return;
+	const handleStop = () => {
+		abortControllerRef.current?.abort();
+		abortControllerRef.current = null;
+		const stoppedFile = regeneratingFile;
+		setGraphLoading(false);
+		setRegeneratingFile(null);
+		setGenerationProgress(null);
+		populateGraphData(false);
+		if (stoppedFile) {
+			fetchData(
+				`http://localhost:8000/knowledge_base/notes/cancel_generation?path=${encodeURIComponent(root + "/" + stoppedFile)}`,
+				undefined,
+				"POST"
+			).catch(() => {});
 		}
-
-		if (text.length === 0) {
-			new Notice(Messages.noSelectedText);
-			return;
-		}
-
-		setDisabled(true);
-		const fetchBody = {
-			repo: {
-				path: root,
-				type: "Notes",
-			},
-			content: text,
-		};
-
-		await fetchData(
-			"http://localhost:8000/knowledge_base/notes/sentence_to_nodes",
-			fetchBody
-		)
-			.then((data) => {
-				console.log("fetched nodes data: ");
-				console.log(data);
-				setSuggested(data.map((node: AnalyticsNode) => node.id));
-				populateGraphData(false);
-			})
-			.catch(() => {
-				new Notice(Messages.fetchFailed);
-			});
-		setDisabled(false);
 	};
 
 	const commands = [
-		{
-			title: "Link prediction",
-			icon: "file-symlink",
-			callback: predictLinks,
-			data: "path",
-		},
-		{
-			title: "Node suggestion",
-			icon: "hexagon",
-			callback: nodeSuggest,
-			data: "selection",
-		},
 		{
 			title: "Regenerate Knowledge Graph",
 			icon: "git-pull-request-arrow",
@@ -189,19 +160,36 @@ const Main: React.FC = (): React.JSX.Element => {
 					return;
 				}
 				try {
+					const controller = new AbortController();
+					abortControllerRef.current = controller;
+					setRegeneratingFile(filePath);
 					setGraphLoading(true);
 					new Notice("Generating knowledge graph…");
 					await fetchData(
 						"http://localhost:8000/knowledge_base/notes/update_file",
 						{ path: root + "/" + filePath, type: "Notes", content: "" },
 						"PUT",
-						900000
-					).catch(() => {});
+						900000,
+						controller.signal
+					);
+					abortControllerRef.current = null;
 					setGraphLoading(false);
-					setSelectedFile("");
-					setTimeout(() => setSelectedFile(filePath), 100);
-				} catch {
-					new Notice("Failed to regenerate knowledge graph.");
+					setRegeneratingFile(null);
+					graphCacheRef.current.delete(filePath);
+					const currentFile = app?.workspace.activeEditor?.file?.path || "";
+					if (currentFile === filePath) {
+						setSelectedFile("");
+						setTimeout(() => setSelectedFile(filePath), 100);
+					} else {
+						pendingReloadRef.current.add(filePath);
+					}
+				} catch (err: any) {
+					setGraphLoading(false);
+					setRegeneratingFile(null);
+					abortControllerRef.current = null;
+					if (err?.name !== "CanceledError" && err?.code !== "ERR_CANCELED") {
+						new Notice("Failed to regenerate knowledge graph.");
+					}
 				}
 			},
 			data: "path",
@@ -224,6 +212,8 @@ const Main: React.FC = (): React.JSX.Element => {
 				};
 			}
 
+			graphCacheRef.current.delete(file.path);
+			if (oldPath) graphCacheRef.current.delete(oldPath);
 			fetchData(
 				`http://localhost:8000/knowledge_base/notes/${Constants.OPERATIONS_MAP[operation].url}_file`,
 				fetchBody,
@@ -239,18 +229,23 @@ const Main: React.FC = (): React.JSX.Element => {
 		setDisabled(true);
 		if (reload) setGraphLoading(true);
 
-		await fetchGraphData(root, selectedFile, ignoreResults, suggested)
+		if (!reload && graphCacheRef.current.has(selectedFile)) {
+			setData(graphCacheRef.current.get(selectedFile)!);
+			setDisabled(false);
+			return () => { ignoreResults = true; };
+		}
+
+		await fetchGraphData(root, selectedFile, ignoreResults, [])
 			.then((data) => {
+				graphCacheRef.current.set(selectedFile, data);
 				setData(data);
 			})
 			.catch(() => {
 				new Notice(Messages.fetchFailed);
 			});
 
-		setGraphLoading(false);
-		console.log("repopulated");
+		if (reload) setGraphLoading(false);
 		setDisabled(false);
-		console.log(disabled || selectedFile.length === 0);
 
 		return () => {
 			ignoreResults = true;
@@ -262,7 +257,10 @@ const Main: React.FC = (): React.JSX.Element => {
 	}, [disabled]);
 
 	useEffect(() => {
-		if (!firstRender) populateGraphData(false);
+		if (!firstRender) {
+			setData({ nodes: [], edges: [] });
+			populateGraphData(false);
+		}
 	}, [selectedFile]);
 
 	useEffect(() => {
@@ -294,7 +292,14 @@ const Main: React.FC = (): React.JSX.Element => {
 		});
 
 		const fileOpenRef = app?.workspace.on("file-open", () => {
-			setSelectedFile(app.workspace.activeEditor?.file?.path || "");
+			const path = app.workspace.activeEditor?.file?.path || "";
+			if (pendingReloadRef.current.has(path)) {
+				pendingReloadRef.current.delete(path);
+				setSelectedFile("");
+				setTimeout(() => setSelectedFile(path), 100);
+			} else {
+				setSelectedFile(path);
+			}
 		});
 		if (fileOpenRef) eventRefs.push(fileOpenRef);
 
@@ -318,9 +323,13 @@ const Main: React.FC = (): React.JSX.Element => {
 			if (ref) eventRefs.push(ref);
 		});
 
-		populateGraphData(true);
-		setDisabled(false);
+		const activePath = app?.workspace.activeEditor?.file?.path || "";
+		setSelectedFile(activePath);
 		setFirstRender(false);
+		setDisabled(false);
+		if (!activePath || activePath === selectedFile) {
+			if (activePath) populateGraphData(false);
+		}
 
 		return () => {
 			eventRefs.forEach((ref) => app?.workspace.offref(ref));
@@ -334,10 +343,10 @@ const Main: React.FC = (): React.JSX.Element => {
 			return () => clearTimeout(timer);
 		}
 		const interval = setInterval(async () => {
-			if (!selectedFile) return;
+			if (!regeneratingFile) return;
 			try {
 				const result = await fetchData(
-					`http://localhost:8000/knowledge_base/notes/generation_progress?path=${encodeURIComponent(root + "/" + selectedFile)}`,
+					`http://localhost:8000/knowledge_base/notes/generation_progress?path=${encodeURIComponent(root + "/" + regeneratingFile)}`,
 					undefined,
 					"GET"
 				);
@@ -350,17 +359,20 @@ const Main: React.FC = (): React.JSX.Element => {
 			} catch { /* ignore */ }
 		}, 2000);
 		return () => clearInterval(interval);
-	}, [graphLoading, selectedFile]);
+	}, [graphLoading, regeneratingFile]);
 
 	return (
 		<S.Container>
-			{(graphLoading || generationProgress !== null) && (
+			{regeneratingFile !== null && regeneratingFile === selectedFile && (graphLoading || generationProgress !== null) && (
 				<S.GenerationBanner>
 					<S.GenerationRow>
 						<S.LoadingIcon />
 						<S.GenerationText>Generating knowledge graph…</S.GenerationText>
 						{generationProgress && (
 							<S.GenerationPercent>{generationProgress.percent}%</S.GenerationPercent>
+						)}
+						{graphLoading && (
+							<S.StopButton onClick={handleStop}>Stop</S.StopButton>
 						)}
 					</S.GenerationRow>
 					<S.GenerationProgressBar $percent={generationProgress?.percent ?? 0} />
@@ -374,7 +386,8 @@ const Main: React.FC = (): React.JSX.Element => {
 			<Graph
 				data={data}
 				nodeClickCallback={onNodeClickCallback}
-				visible={!graphLoading}
+				edgeClickCallback={onEdgeClickCallback}
+				visible={!(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading)}
 				disabled={disabled}
 				filePath={selectedFile}
 			/>

@@ -1,12 +1,13 @@
 import axios from 'axios';
 
-export const fetchData = async (url: string, data?: object, method?: string, timeout = 120000) => {
+export const fetchData = async (url: string, data?: object, method?: string, timeout = 120000, signal?: AbortSignal) => {
     try {
         const response = await axios({
             method: method || "POST",
             url,
             data,
             timeout,
+            signal,
         });
         return response.data;
     } catch (error) {

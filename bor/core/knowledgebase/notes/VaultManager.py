@@ -42,22 +42,17 @@ class VaultManager:
                     f"MATCH (n {{file_path: '{file_path}'}}) RETURN count(n) as c"
                 ))
                 has_nodes = existing[0]['c'] > 0 if existing else False
-                if has_nodes:
-                    data = self.mm.export_data_for_repo_path(self.vault_path)
-                    res_queries = self.ta.data_and_text_to_cypher_update(
-                        str(data), file_text, self.vault_path, file_path)
-                else:
+                if not has_nodes:
                     res_queries = self.ta.text_to_cypher_chunked(
                         file_text, self.vault_path, file_path)
-                self.mm.run_update_query(res_queries)
-            # Set repo_path/file_path on any nodes the LLM omitted them from
+                    self.mm.run_update_query(res_queries)
+            # Remove any nodes that were created without a file_path (stale/partial runs)
             try:
                 self.mm.db.execute(
-                    f"MATCH (n) WHERE n.file_path IS NULL "
-                    f"SET n.file_path = '{file_path}', n.repo_path = '{self.vault_path}'"
+                    "MATCH (n) WHERE n.file_path IS NULL DETACH DELETE n"
                 )
             except Exception as e:
-                print(f"WARN: post-processing set failed: {e}")
+                print(f"WARN: post-processing delete failed: {e}")
             self.cm.add_file(file_path)
             processed.append(file_path)
 

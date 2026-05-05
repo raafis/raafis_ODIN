@@ -50,9 +50,67 @@ class Searcher:
     def search_text_tool(self: Searcher, query: str) -> str:
         return '\n'.join(self.search_text(query_text=query))
 
+    _STOP_WORDS = {"a", "an", "the", "of", "in", "at", "to", "for", "and", "or", "with", "by", "is", "are", "was", "were"}
+
+    @staticmethod
+    def _name_pattern(name: str):
+        import re
+        words = [re.escape(w) for w in name.lower().split() if w]
+        return re.compile(r'[\s\-_/]+'.join(words), re.IGNORECASE) if words else None
+
+    @classmethod
+    def _word_patterns(cls, name: str):
+        import re
+        words = [w.lower() for w in name.split() if w.lower() not in cls._STOP_WORDS]
+        if not words:
+            words = name.lower().split()
+        return [re.compile(r'\b' + re.escape(w) + r'\b', re.IGNORECASE) for w in words]
+
+    @classmethod
+    def _match_sentences(cls, sentences: list, name: str) -> list:
+        # Level 1: full phrase with flexible separators (handles hyphenation)
+        pat = cls._name_pattern(name)
+        if pat:
+            matches = [s for s in sentences if pat.search(s)]
+            if matches:
+                return matches[:3]
+        # Level 2: all significant words present anywhere in the sentence
+        word_pats = cls._word_patterns(name)
+        if word_pats:
+            matches = [s for s in sentences if all(p.search(s) for p in word_pats)]
+            if matches:
+                return matches[:3]
+        # Level 3: most significant words present (allow one miss for long names)
+        if len(word_pats) > 2:
+            threshold = len(word_pats) - 1
+            matches = [s for s in sentences if sum(1 for p in word_pats if p.search(s)) >= threshold]
+            if matches:
+                return matches[:3]
+        # Level 4: greedy — top sentences by overlap count, min 2 matching words
+        if word_pats:
+            scored = sorted(
+                ((s, sum(1 for p in word_pats if p.search(s))) for s in sentences),
+                key=lambda x: -x[1]
+            )
+            matches = [s for s, cnt in scored if cnt >= 2]
+            if matches:
+                return matches[:3]
+            # Level 5: rarest-word fallback — most distinctive word with ≥1 sentence match
+            word_freqs = sorted(
+                [(p, sum(1 for s in sentences if p.search(s))) for p in word_pats],
+                key=lambda x: x[1]
+            )
+            for p, cnt in word_freqs:
+                if cnt > 0:
+                    return [s for s in sentences if p.search(s)][:3]
+        return []
+
     def node_id_to_sentences(self: Searcher, id: int) -> List[str]:
         import pathlib
         import nltk
+        stored = self.mm.get_node_source_sentences(id)
+        if stored:
+            return stored
         node_name = self.mm.get_node_name(id)
         file_path = self.mm.get_node_file_path(id)
         if not node_name or not file_path:
@@ -60,9 +118,46 @@ class Searcher:
         try:
             text = pathlib.Path(file_path).read_text(errors="ignore")
             sentences = nltk.tokenize.sent_tokenize(text)
-            name_lower = node_name.lower()
-            matches = [s for s in sentences if name_lower in s.lower()]
-            return matches[:3] if matches else []
+            matched = self._match_sentences(sentences, node_name)
+            if matched:
+                return matched
+        except Exception:
+            pass
+        # Embedding fallback: node name words absent from text — search by semantic similarity
+        try:
+            emb = Embeddings.get_embedding(node_name)
+            from core.knowledgebase.notes.CollectionManager import CollectionManager
+            cm = CollectionManager(self.repo_path)
+            res = cm.collection.query(
+                query_embeddings=[emb],
+                n_results=3,
+                where={"file_path": file_path},
+                include=["documents"]
+            )
+            return res['documents'][0] if res['documents'] else []
+        except Exception:
+            return []
+
+    def edge_id_to_sentences(self: Searcher, src_id: int, dst_id: int) -> List[str]:
+        import pathlib
+        import nltk
+        src_name = self.mm.get_node_name(src_id)
+        dst_name = self.mm.get_node_name(dst_id)
+        file_path = self.mm.get_node_file_path(src_id) or self.mm.get_node_file_path(dst_id)
+        if not src_name or not dst_name or not file_path:
+            return []
+        try:
+            text = pathlib.Path(file_path).read_text(errors="ignore")
+            sentences = nltk.tokenize.sent_tokenize(text)
+            src_pat = self._name_pattern(src_name)
+            dst_pat = self._name_pattern(dst_name)
+            if not src_pat or not dst_pat:
+                return []
+            both = [s for s in sentences if src_pat.search(s) and dst_pat.search(s)]
+            if both:
+                return both[:3]
+            either = [s for s in sentences if src_pat.search(s) or dst_pat.search(s)]
+            return either[:3]
         except Exception:
             return []
 

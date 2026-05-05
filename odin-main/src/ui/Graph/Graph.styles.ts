@@ -17,6 +17,7 @@ type priorityColorsKey = keyof typeof priorityColors;
 export const GraphContainer = styled.div<GraphContainerProps>`
     width: 100%;
     height: 100%;
+    border: none !important;
     visibility: ${props => props.$visible ? "visible" : "hidden"};
 `;
 
@@ -109,10 +110,6 @@ export const GraphStyle = [
         selector: "edge.hovered",
         style: {
             width: 3,
-            label: "data(label)",
-            "font-size": "10px",
-            "text-max-width": "80px",
-            "min-zoomed-font-size": 7,
             "line-color": theme.colors["accent-light"],
             "target-arrow-color": theme.colors["accent-light"],
         },
@@ -121,10 +118,6 @@ export const GraphStyle = [
         selector: "edge.hovered-incoming",
         style: {
             width: 3,
-            label: "data(label)",
-            "font-size": "10px",
-            "text-max-width": "80px",
-            "min-zoomed-font-size": 7,
             "line-color": "white",
             "target-arrow-color": "white",
         },
@@ -133,9 +126,9 @@ export const GraphStyle = [
         selector: "edge.edge-active",
         style: {
             width: 3,
-            label: "data(label)",
+            label: "data(fullLabel)",
             "font-size": "10px",
-            "text-max-width": "80px",
+            "text-max-width": "150px",
             "min-zoomed-font-size": 7,
             "line-color": theme.colors["accent-light"],
             "target-arrow-color": theme.colors["accent-light"],
@@ -145,9 +138,9 @@ export const GraphStyle = [
         selector: "edge.edge-active-incoming",
         style: {
             width: 3,
-            label: "data(label)",
+            label: "data(fullLabel)",
             "font-size": "10px",
-            "text-max-width": "80px",
+            "text-max-width": "150px",
             "min-zoomed-font-size": 7,
             "line-color": "white",
             "target-arrow-color": "white",

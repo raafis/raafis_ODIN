@@ -45,9 +45,9 @@ export const GenerationBanner = styled.div`
     display: flex;
     flex-direction: column;
     gap: var(--size-4-2);
-    background-color: var(--color-base-10);
-    border-bottom: 1px solid var(--divider-color);
+    background-color: transparent;
     border-radius: var(--radius-s);
+    border-bottom: none !important;
 `;
 
 export const GenerationRow = styled.div`
@@ -66,6 +66,23 @@ export const GenerationPercent = styled.span`
     font-size: var(--font-ui-small);
     color: var(--color-accent-1);
     font-weight: var(--font-semibold);
+`;
+
+export const StopButton = styled.button`
+    && {
+        padding: 2px 10px;
+        border-radius: var(--radius-s);
+        border: 1px solid var(--text-error, #e05252);
+        background: transparent;
+        color: var(--text-error, #e05252);
+        font-size: var(--font-ui-smaller);
+        cursor: pointer;
+        box-shadow: none;
+    }
+    &&:hover {
+        background: var(--text-error, #e05252);
+        color: #fff;
+    }
 `;
 
 interface GenerationProgressBarProps {
