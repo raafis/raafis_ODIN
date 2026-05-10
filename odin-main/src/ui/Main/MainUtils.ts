@@ -4,7 +4,7 @@ import { Edge, Node } from "src/shared/types/graphTypes";
 import { fetchData } from "src/util/fetchData";
 import shortenWord from "src/util/shortenWord";
 
-export const fetchGraphData = async (root: string, selectedFile: string, ignoreResults: boolean, suggested: number[]): Promise<{ nodes: Node[], edges: Edge[] }> => {
+export const fetchGraphData = async (root: string, selectedFile: string, ignoreResults: boolean, suggested: number[]): Promise<{ nodes: Node[], edges: Edge[], rawNodeCount: number }> => {
     if (!selectedFile) return { nodes: [], edges: [] };
 
     const fetchUrl = "http://localhost:8000/knowledge_base/notes/get_for_path";
@@ -55,5 +55,7 @@ export const fetchGraphData = async (root: string, selectedFile: string, ignoreR
 
     const nodeIds = new Set(nodeList.map(n => n.data.id));
     const filteredEdges = edgeList.filter(e => nodeIds.has(e.data.source) && nodeIds.has(e.data.target));
-    return { nodes: nodeList, edges: filteredEdges }
+    const connectedIds = new Set([...filteredEdges.map(e => e.data.source), ...filteredEdges.map(e => e.data.target)]);
+    const filteredNodes = nodeList.filter(n => connectedIds.has(n.data.id));
+    return { nodes: filteredNodes, edges: filteredEdges, rawNodeCount: nodeList.length }
 }

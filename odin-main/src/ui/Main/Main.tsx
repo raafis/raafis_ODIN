@@ -5,7 +5,7 @@ import * as S from "./Main.styles";
 import { useApp } from "../hooks/useApp";
 import { Edge, Node } from "src/shared/types/graphTypes";
 import { fetchData } from "src/util/fetchData";
-import { FileSystemAdapter, Notice, TAbstractFile } from "obsidian";
+import { FileSystemAdapter, Notice, TAbstractFile, TFile } from "obsidian";
 import getEditorPosition from "src/util/getEditorPosition";
 import * as Messages from "src/shared/messages";
 import { fetchGraphData } from "./MainUtils";
@@ -27,11 +27,22 @@ const Main: React.FC = (): React.JSX.Element => {
 	const [generationProgress, setGenerationProgress] = useState<{ current: number; total: number; percent: number } | null>(null);
 	const [regeneratingFile, setRegeneratingFile] = useState<string | null>(null);
 	const [firstRender, setFirstRender] = useState<boolean>(true);
+	const [summary, setSummary] = useState<string | null>(null);
+	const [summaryLoading, setSummaryLoading] = useState(false);
 	const [disabled, setDisabled] = useState<boolean>(true);
+	const [activeNodeId, setActiveNodeId] = useState<string | undefined>(undefined);
+	const [copied, setCopied] = useState<boolean>(false);
+	const [cachedNodeIds, setCachedNodeIds] = useState<Set<string>>(new Set());
+	const [hasNonTitleContent, setHasNonTitleContent] = useState<boolean>(false);
 	const disabledRef = useRef<boolean>(true);
 	const pendingReloadRef = useRef<Set<string>>(new Set());
 	const graphCacheRef = useRef<Map<string, { nodes: Node[]; edges: Edge[] }>>(new Map());
+	const activeNodePerFileRef = useRef<Map<string, { nodeId: string; summary: string | null; loading: boolean }>>(new Map());
+	const nodeSummaryCacheRef = useRef<Map<string, string | null>>(new Map());
+	const lastHighlightedEditorRef = useRef<any>(null);
+	const selectedFileRef = useRef<string>(selectedFile);
 	const abortControllerRef = useRef<AbortController | null>(null);
+	const graphEverExistedRef = useRef<Set<string>>(new Set());
 
 	const root =
 		app?.vault.adapter instanceof FileSystemAdapter
@@ -39,6 +50,20 @@ const Main: React.FC = (): React.JSX.Element => {
 			: "/";
 
 	const onNodeClickCallback = async (node: NodeSingular) => {
+		const capturedFile = selectedFile;
+		const nodeId = node.data().id;
+
+		// Capture loading state BEFORE resetting the ref so we can detect a
+		// concurrent regeneration that was already in flight when this click fired.
+		const priorEntry = activeNodePerFileRef.current.get(capturedFile);
+		const summaryAlreadyInProgress =
+			priorEntry?.nodeId === nodeId && priorEntry?.loading === true;
+
+		setActiveNodeId(nodeId);
+		if (!summaryAlreadyInProgress) {
+			activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: false });
+		}
+
 		let ignoreResults = false;
 		{
 			setDisabled(true);
@@ -48,7 +73,7 @@ const Main: React.FC = (): React.JSX.Element => {
 					path: root,
 					type: "Notes",
 				},
-				id: node.data().id,
+				id: nodeId,
 			};
 
 			await fetchData(
@@ -67,10 +92,13 @@ const Main: React.FC = (): React.JSX.Element => {
 						);
 					});
 
-					if (active === selectedFile && !ignoreResults && selections.length > 0)
-						app?.workspace.activeEditor?.editor?.setSelections(
-							selections
-						);
+					if (active === selectedFile && !ignoreResults && selections.length > 0) {
+						const ed = app?.workspace.activeEditor?.editor;
+						if (ed) {
+							lastHighlightedEditorRef.current = ed;
+							ed.setSelections(selections);
+						}
+					}
 				})
 				.catch(() => {
 					new Notice(Messages.fetchFailed);
@@ -78,9 +106,96 @@ const Main: React.FC = (): React.JSX.Element => {
 			setDisabled(false);
 		}
 
+		const cacheKey = `${capturedFile}::${nodeId}`;
+
+		// If a regeneration was already in flight when this click fired, skip the
+		// summary fetch entirely to prevent a duplicate API call.
+		if (summaryAlreadyInProgress) {
+			return () => { ignoreResults = true; };
+		}
+
+		if (nodeSummaryCacheRef.current.has(cacheKey)) {
+			const cached = nodeSummaryCacheRef.current.get(cacheKey) ?? null;
+			setSummary(cached);
+			setSummaryLoading(false);
+			activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: cached, loading: false });
+			return () => { ignoreResults = true; };
+		}
+
+		setSummary(null);
+		setSummaryLoading(false);
+
 		return () => {
 			ignoreResults = true;
 		};
+	};
+
+	const fetchAndCacheSummary = (nodeId: string, capturedFile: string, variation = false) => {
+		const cacheKey = `${capturedFile}::${nodeId}`;
+		setSummary(null);
+		setSummaryLoading(true);
+		activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: true });
+		fetchData(
+			"http://localhost:8000/knowledge_base/notes/node_summary",
+			{ repo: { path: root, type: "Notes" }, id: nodeId, regenerate: variation }
+		).then(result => {
+			const content = result?.content ?? null;
+			nodeSummaryCacheRef.current.set(cacheKey, content);
+			const currentEntry = activeNodePerFileRef.current.get(capturedFile);
+			if (currentEntry?.nodeId === nodeId) {
+				activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: content, loading: false });
+			}
+			if (selectedFileRef.current === capturedFile) {
+				setSummary(content);
+				setSummaryLoading(false);
+				setCachedNodeIds(prev => new Set([...prev, nodeId]));
+			}
+		}).catch(() => {
+			new Notice("Failed to get node summary.");
+			const currentEntry = activeNodePerFileRef.current.get(capturedFile);
+			if (currentEntry?.nodeId === nodeId) {
+				activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: currentEntry.summary, loading: false });
+			}
+			if (selectedFileRef.current === capturedFile) {
+				setSummaryLoading(false);
+			}
+		});
+	};
+
+	const handleClearSummary = () => {
+		setSummary(null);
+		setSummaryLoading(false);
+		if (activeNodeId) {
+			const cacheKey = `${selectedFile}::${activeNodeId}`;
+			nodeSummaryCacheRef.current.delete(cacheKey);
+			setCachedNodeIds(prev => { const next = new Set(prev); next.delete(activeNodeId); return next; });
+			activeNodePerFileRef.current.set(selectedFile, { nodeId: activeNodeId, summary: null, loading: false });
+		}
+	};
+
+	const handleCopySummary = () => {
+		if (!summary) return;
+		navigator.clipboard.writeText(summary).then(() => {
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		}).catch(() => {
+			new Notice("Failed to copy summary.");
+		});
+	};
+
+	const handleGetSummary = () => {
+		if (!activeNodeId) return;
+		fetchAndCacheSummary(activeNodeId, selectedFile);
+	};
+
+	const handleRegenerateSummary = () => {
+		if (!activeNodeId) return;
+		const capturedFile = selectedFile;
+		const nodeId = activeNodeId;
+		const cacheKey = `${capturedFile}::${nodeId}`;
+		nodeSummaryCacheRef.current.delete(cacheKey);
+		setCachedNodeIds(prev => { const next = new Set(prev); next.delete(nodeId); return next; });
+		fetchAndCacheSummary(nodeId, capturedFile, true);
 	};
 
 	const onEdgeClickCallback = async (edge: EdgeSingular) => {
@@ -133,6 +248,57 @@ const Main: React.FC = (): React.JSX.Element => {
 		};
 	};
 
+	const handleActiveNodeIdChange = (id: string | undefined) => {
+		setActiveNodeId(id);
+		if (id === undefined) {
+			activeNodePerFileRef.current.delete(selectedFile);
+		}
+	};
+
+	const clearHighlight = () => {
+		const tryDeselect = (ed: any) => {
+			if (!ed) return;
+			try { ed.focus(); } catch {}
+			try {
+				const cm = ed?.cm;
+				if (cm?.state?.selection) {
+					cm.dispatch({ selection: { anchor: cm.state.selection.main.head } });
+				}
+			} catch {}
+			try {
+				const pos = ed.getCursor('head');
+				if (pos) ed.setCursor(pos);
+			} catch {}
+		};
+
+		const ed = lastHighlightedEditorRef.current;
+		if (ed) {
+			tryDeselect(ed);
+			lastHighlightedEditorRef.current = null;
+			return;
+		}
+		app?.workspace.iterateAllLeaves((leaf: any) => {
+			if (leaf.view?.getViewType?.() === 'markdown') {
+				tryDeselect(leaf.view?.editor);
+			}
+		});
+	};
+
+	const updateHasNonTitleContent = async (filePath: string) => {
+		if (!filePath || !app) { setHasNonTitleContent(false); return; }
+		const abstractFile = app.vault.getAbstractFileByPath(filePath);
+		if (!abstractFile || !(abstractFile instanceof TFile)) { setHasNonTitleContent(false); return; }
+		const content = await app.vault.read(abstractFile);
+		const lines = content.split("\n");
+		let start = 0;
+		if (lines[0]?.trim() === "---") {
+			const end = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === "---");
+			if (end !== -1) start = end + 1;
+		}
+		if (lines[start]?.trim().startsWith("# ")) start++;
+		setHasNonTitleContent(/\S+\s/.test(lines.slice(start).join("\n")));
+	};
+
 	const handleStop = () => {
 		abortControllerRef.current?.abort();
 		abortControllerRef.current = null;
@@ -159,11 +325,17 @@ const Main: React.FC = (): React.JSX.Element => {
 					new Notice("No file is open.");
 					return;
 				}
-				try {
+					try {
 					const controller = new AbortController();
 					abortControllerRef.current = controller;
 					setRegeneratingFile(filePath);
 					setGraphLoading(true);
+					if (filePath === selectedFileRef.current) {
+						setSummary(null);
+						setSummaryLoading(false);
+						setActiveNodeId(undefined);
+						activeNodePerFileRef.current.delete(filePath);
+					}
 					new Notice("Generating knowledge graph…");
 					await fetchData(
 						"http://localhost:8000/knowledge_base/notes/update_file",
@@ -176,7 +348,12 @@ const Main: React.FC = (): React.JSX.Element => {
 					setGraphLoading(false);
 					setRegeneratingFile(null);
 					graphCacheRef.current.delete(filePath);
-					const currentFile = app?.workspace.activeEditor?.file?.path || "";
+					activeNodePerFileRef.current.delete(filePath);
+					nodeSummaryCacheRef.current.forEach((_, key) => {
+						if (key.startsWith(`${filePath}::`)) nodeSummaryCacheRef.current.delete(key);
+					});
+					if (filePath === selectedFile) setCachedNodeIds(new Set());
+					const currentFile = selectedFileRef.current;
 					if (currentFile === filePath) {
 						setSelectedFile("");
 						setTimeout(() => setSelectedFile(filePath), 100);
@@ -201,8 +378,8 @@ const Main: React.FC = (): React.JSX.Element => {
 			let fetchBody;
 			if (operation === "rename") {
 				fetchBody = {
-					old_file: { path: oldPath, type: "Notes", content: "" },
-					new_file: { path: file.path, type: "Notes", content: "" },
+					old_file: { path: root + "/" + (oldPath || ""), type: "Notes", content: "" },
+					new_file: { path: root + "/" + file.path, type: "Notes", content: "" },
 				};
 			} else {
 				fetchBody = {
@@ -214,6 +391,14 @@ const Main: React.FC = (): React.JSX.Element => {
 
 			graphCacheRef.current.delete(file.path);
 			if (oldPath) graphCacheRef.current.delete(oldPath);
+			nodeSummaryCacheRef.current.forEach((_, key) => {
+				if (key.startsWith(`${file.path}::`)) nodeSummaryCacheRef.current.delete(key);
+			});
+			if (oldPath) {
+				nodeSummaryCacheRef.current.forEach((_, key) => {
+					if (key.startsWith(`${oldPath}::`)) nodeSummaryCacheRef.current.delete(key);
+				});
+			}
 			fetchData(
 				`http://localhost:8000/knowledge_base/notes/${Constants.OPERATIONS_MAP[operation].url}_file`,
 				fetchBody,
@@ -236,9 +421,15 @@ const Main: React.FC = (): React.JSX.Element => {
 		}
 
 		await fetchGraphData(root, selectedFile, ignoreResults, [])
-			.then((data) => {
-				graphCacheRef.current.set(selectedFile, data);
-				setData(data);
+			.then((result) => {
+				const graphData = { nodes: result.nodes, edges: result.edges };
+				graphCacheRef.current.set(selectedFile, graphData);
+				setData(graphData);
+				if (result.rawNodeCount > 0) {
+					graphEverExistedRef.current.add(selectedFile);
+				} else {
+					graphEverExistedRef.current.delete(selectedFile);
+				}
 			})
 			.catch(() => {
 				new Notice(Messages.fetchFailed);
@@ -257,8 +448,33 @@ const Main: React.FC = (): React.JSX.Element => {
 	}, [disabled]);
 
 	useEffect(() => {
+		selectedFileRef.current = selectedFile;
+	}, [selectedFile]);
+
+	useEffect(() => {
+		if (regeneratingFile && regeneratingFile === selectedFile) {
+			setSummary(null);
+			setSummaryLoading(false);
+			setActiveNodeId(undefined);
+			activeNodePerFileRef.current.delete(regeneratingFile);
+		}
+	}, [regeneratingFile, selectedFile]);
+
+	useEffect(() => {
 		if (!firstRender) {
 			setData({ nodes: [], edges: [] });
+			setHasNonTitleContent(false);
+			const saved = activeNodePerFileRef.current.get(selectedFile);
+			setActiveNodeId(saved?.nodeId ?? undefined);
+			setSummary(saved?.summary ?? null);
+			setSummaryLoading(saved?.loading ?? false);
+			const filePrefix = `${selectedFile}::`;
+			const restoredIds = new Set<string>();
+			nodeSummaryCacheRef.current.forEach((_, key) => {
+				if (key.startsWith(filePrefix)) restoredIds.add(key.slice(filePrefix.length));
+			});
+			setCachedNodeIds(restoredIds);
+			updateHasNonTitleContent(selectedFile);
 			populateGraphData(false);
 		}
 	}, [selectedFile]);
@@ -291,8 +507,8 @@ const Main: React.FC = (): React.JSX.Element => {
 			if (ref) eventRefs.push(ref);
 		});
 
-		const fileOpenRef = app?.workspace.on("file-open", () => {
-			const path = app.workspace.activeEditor?.file?.path || "";
+		const fileOpenRef = app?.workspace.on("file-open", (file) => {
+			const path = file?.path || "";
 			if (pendingReloadRef.current.has(path)) {
 				pendingReloadRef.current.delete(path);
 				setSelectedFile("");
@@ -303,10 +519,29 @@ const Main: React.FC = (): React.JSX.Element => {
 		});
 		if (fileOpenRef) eventRefs.push(fileOpenRef);
 
+		const editorChangeRef = app?.workspace.on("editor-change", (editor, info) => {
+			if (!selectedFileRef.current) return;
+			const filePath = (info as any).file?.path;
+			if (filePath !== undefined && filePath !== selectedFileRef.current) return;
+			const content = editor.getValue();
+			const lines = content.split("\n");
+			let start = 0;
+			if (lines[0]?.trim() === "---") {
+				const end = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === "---");
+				if (end !== -1) start = end + 1;
+			}
+			if (lines[start]?.trim().startsWith("# ")) start++;
+			setHasNonTitleContent(/\S+\s/.test(lines.slice(start).join("\n")));
+		});
+		if (editorChangeRef) eventRefs.push(editorChangeRef);
+
 		commands.forEach((command) => {
 			const ref = app?.workspace.on("editor-menu", (menu) => {
+				const currentFilePath = app.workspace.activeEditor?.file?.path || "";
+				if (!currentFilePath) return;
+				const hasGraph = graphEverExistedRef.current.has(currentFilePath);
 				menu.addItem((item) => {
-					item.setTitle(command.title)
+					item.setTitle(hasGraph ? command.title : "Generate Knowledge Graph")
 						.setIcon(command.icon)
 						.onClick(() => {
 							if (command.callback) {
@@ -323,16 +558,45 @@ const Main: React.FC = (): React.JSX.Element => {
 			if (ref) eventRefs.push(ref);
 		});
 
-		const activePath = app?.workspace.activeEditor?.file?.path || "";
+		let activePath = app?.workspace.activeEditor?.file?.path || "";
+		if (!activePath) {
+			// Plugin panel may have stolen focus on toggle — scan leaves for any open markdown note
+			app?.workspace.iterateAllLeaves((leaf: any) => {
+				if (!activePath && leaf.view?.getViewType?.() === "markdown" && leaf.view?.file?.path) {
+					activePath = leaf.view.file.path;
+				}
+			});
+		}
 		setSelectedFile(activePath);
+		updateHasNonTitleContent(activePath);
 		setFirstRender(false);
+		clearHighlight();
 		setDisabled(false);
 		if (!activePath || activePath === selectedFile) {
 			if (activePath) populateGraphData(false);
 		}
 
+		const contentPollInterval = setInterval(() => {
+			const currentPath = selectedFileRef.current;
+			if (!currentPath || graphEverExistedRef.current.has(currentPath)) return;
+			const editor = app?.workspace.activeEditor?.editor;
+			if (!editor) return;
+			const activeFilePath = (app?.workspace.activeEditor as any)?.file?.path;
+			if (activeFilePath !== undefined && activeFilePath !== currentPath) return;
+			const content = editor.getValue();
+			const lines = content.split("\n");
+			let start = 0;
+			if (lines[0]?.trim() === "---") {
+				const end = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === "---");
+				if (end !== -1) start = end + 1;
+			}
+			if (lines[start]?.trim().startsWith("# ")) start++;
+			setHasNonTitleContent(/\S+\s/.test(lines.slice(start).join("\n")));
+		}, 300);
+
 		return () => {
 			eventRefs.forEach((ref) => app?.workspace.offref(ref));
+			clearInterval(contentPollInterval);
 		};
 	}, []);
 
@@ -383,14 +647,61 @@ const Main: React.FC = (): React.JSX.Element => {
 					<S.LoadingIcon />
 				</S.GlobalLoadingContainer>
 			)}
-			<Graph
-				data={data}
-				nodeClickCallback={onNodeClickCallback}
-				edgeClickCallback={onEdgeClickCallback}
-				visible={!(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading)}
-				disabled={disabled}
-				filePath={selectedFile}
-			/>
+			<S.ContentRow>
+				<S.GraphWrapper>
+					<Graph
+						data={data}
+						activeNodeId={activeNodeId}
+						onActiveNodeIdChange={handleActiveNodeIdChange}
+						cachedNodeIds={cachedNodeIds}
+						nodeClickCallback={onNodeClickCallback}
+						edgeClickCallback={onEdgeClickCallback}
+						onBackgroundClick={() => {
+						setSummary(null);
+						setSummaryLoading(false);
+						clearHighlight();
+					}}
+						visible={!(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading)}
+						disabled={disabled}
+						filePath={selectedFile}
+					/>
+					{data.nodes.length === 0 && hasNonTitleContent && !disabled &&
+					 regeneratingFile !== selectedFile && !graphLoading && !!selectedFile &&
+					 !graphEverExistedRef.current.has(selectedFile) && (
+						<S.GenerateButtonOverlay>
+							<S.GenerateKGButton onClick={() => commands[0].callback(selectedFile)}>
+								Generate Knowledge Graph
+							</S.GenerateKGButton>
+						</S.GenerateButtonOverlay>
+					)}
+				</S.GraphWrapper>
+				<S.SidePanel>
+					{regeneratingFile !== selectedFile && summaryLoading && <S.LoadingIcon />}
+					{regeneratingFile !== selectedFile && !summaryLoading && summary && <S.SummaryText>{summary}</S.SummaryText>}
+					{regeneratingFile !== selectedFile && !summaryLoading && summary && (
+						<S.ButtonRow>
+							{copied && <S.CopiedToast>copied to clipboard</S.CopiedToast>}
+							<S.CopyButton onClick={handleCopySummary}>
+								{copied ? <S.CheckIcon /> : <S.CopyIcon />}
+							</S.CopyButton>
+							{activeNodeId && (
+								<S.RegenerateSummaryButton onClick={handleRegenerateSummary}>
+									<S.RegenerateIcon />
+								</S.RegenerateSummaryButton>
+							)}
+							<S.TrashButton onClick={handleClearSummary}>
+								<S.TrashIcon />
+							</S.TrashButton>
+						</S.ButtonRow>
+					)}
+					{regeneratingFile !== selectedFile && !summaryLoading && !summary && !activeNodeId && data.nodes.length > 0 && (
+						<S.SummaryPlaceholder>Click a node to see its connections</S.SummaryPlaceholder>
+					)}
+					{regeneratingFile !== selectedFile && !summaryLoading && !summary && activeNodeId && (
+						<S.GetSummaryButton onClick={handleGetSummary}>Get Summary</S.GetSummaryButton>
+					)}
+				</S.SidePanel>
+			</S.ContentRow>
 		</S.Container>
 	);
 };

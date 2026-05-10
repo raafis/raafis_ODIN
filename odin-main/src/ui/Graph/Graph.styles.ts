@@ -41,6 +41,12 @@ export const GraphStyle = [
         },
     },
     {
+        selector: "node.has-summary",
+        style: {
+            "background-color": "#4ade80",
+        },
+    },
+    {
         selector: "edge",
         style: {
             width: 1,
@@ -64,8 +70,6 @@ export const GraphStyle = [
     {
         selector: "node:selected",
         style: {
-            width: (node: cytoscape.NodeSingular) => "25px",
-            height: (node: cytoscape.NodeSingular) => "25px",
             "background-color": theme.colors["accent"],
             "border-width": "2px",
             "border-color": theme.colors["secondary-neutral"],
@@ -88,6 +92,8 @@ export const GraphStyle = [
     {
         selector: "node.hovered",
         style: {
+            width: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+            height: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
             "border-width": "3px",
             "border-color": theme.colors["accent-light"],
         },
@@ -150,6 +156,31 @@ export const GraphStyle = [
         selector: ".dimmed",
         style: {
             opacity: 0.25,
+        },
+    },
+    {
+        selector: "node.active-neighbor-outgoing.hovered",
+        style: {
+            width: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+            height: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+            "border-width": "5px",
+            "border-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "node.active-neighbor-incoming.hovered",
+        style: {
+            width: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+            height: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+            "border-width": "5px",
+            "border-color": "white",
+        },
+    },
+    {
+        selector: "node:selected.hovered",
+        style: {
+            width: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+            height: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
         },
     },
 ]

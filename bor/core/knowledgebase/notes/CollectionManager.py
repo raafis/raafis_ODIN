@@ -74,6 +74,8 @@ class CollectionManager:
         ids = self.collection.get(
             where={"file_path": str(old_file_path)}
         )['ids']
+        if not ids:
+            return
         self.collection.update(
             ids, metadatas=[{"file_path": str(new_file_path)}] * len(ids))
         return

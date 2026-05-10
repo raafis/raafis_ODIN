@@ -142,7 +142,9 @@ class MemgraphManager:
     def describe_node(self: MemgraphManager, id: int) -> str:
         query = CQ.get_node_description_query(id)
         results = self.db.execute_and_fetch(query)
-        res = next(results)
+        res = next(results, None)
+        if res is None:
+            return ""
         out = ""
         _, node_type, node_name = res['Node_ID'], res['Node_Type'], res['Node_Name']
         out += f"{MemgraphManager.print_type_and_obj(node_type, node_name)}\n"

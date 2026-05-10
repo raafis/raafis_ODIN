@@ -61,6 +61,7 @@ class Answer(BaseModel):
 class Node(BaseModel):
     repo: Repo
     id: int
+    regenerate: bool = False
 
 
 class Sentence(BaseModel):
@@ -309,6 +310,9 @@ def delete_file(file: File) -> None:
 @app.post("/knowledge_base/notes/rename_file")
 def rename_file(old_file: File, new_file: File) -> None:
     repo_path = Utils.repo_path_from_file_path(old_file.path)
+    collection_name = Utils.collection_name_from_repo_path(repo_path)
+    if not collection_name or collection_name == ".":
+        return
     mm = MemgraphManager()
     cm = CollectionManager(repo_path)
     mm.rename_file(old_file.path, new_file.path)
@@ -320,6 +324,21 @@ def rename_file(old_file: File, new_file: File) -> None:
 def node_to_sentences(node: Node) -> List[Sentence]:
     searcher = Searcher(node.repo.path)
     return [Sentence(repo=node.repo, content=c) for c in searcher.node_id_to_sentences(node.id)]
+
+
+@app.post("/knowledge_base/notes/node_summary")
+def node_summary(node: Node) -> Answer:
+    try:
+        mm = MemgraphManager()
+        description = mm.describe_node(node.id)
+        searcher = Searcher(node.repo.path)
+        sentences = searcher.node_id_to_sentences(node.id)
+        ta = TextAnalizer()
+        summary = ta.summarize_node(description, sentences, variation=node.regenerate)
+        return Answer(content=summary)
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/knowledge_base/notes/edge_to_sentences")

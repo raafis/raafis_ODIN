@@ -37,7 +37,7 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "main.js",
+	outfile: "/home/raafisedyaporna/PT-Diorama-Products-Indonesia/odin_trial/.obsidian/plugins/odin/main.js",
 });
 
 if (prod) {

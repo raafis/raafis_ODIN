@@ -57247,6 +57247,12 @@ var GraphStyle = [
     }
   },
   {
+    selector: "node.has-summary",
+    style: {
+      "background-color": "#4ade80"
+    }
+  },
+  {
     selector: "edge",
     style: {
       width: 1,
@@ -57406,18 +57412,23 @@ var Graph = ({
   data,
   nodeClickCallback,
   edgeClickCallback,
+  onBackgroundClick,
+  onActiveNodeIdChange,
+  activeNodeId,
+  cachedNodeIds,
   visible,
   disabled,
   filePath
 }) => {
   const [selected, setSelected] = (0, import_react3.useState)(void 0);
-  const [activeNodeId, setActiveNodeId] = (0, import_react3.useState)(void 0);
   const activeNodeIdRef = (0, import_react3.useRef)(void 0);
   const cyRef = (0, import_react3.useRef)(null);
   const positionCacheRef = (0, import_react3.useRef)(/* @__PURE__ */ new Map());
   const filePathRef = (0, import_react3.useRef)(filePath);
   const cacheKeyRef = (0, import_react3.useRef)("");
   const edgeClickCallbackRef = (0, import_react3.useRef)(edgeClickCallback);
+  const onBackgroundClickRef = (0, import_react3.useRef)(onBackgroundClick);
+  const onActiveNodeIdChangeRef = (0, import_react3.useRef)(onActiveNodeIdChange);
   const app = useApp();
   (0, import_react3.useEffect)(() => {
     filePathRef.current = filePath;
@@ -57425,6 +57436,15 @@ var Graph = ({
   (0, import_react3.useEffect)(() => {
     edgeClickCallbackRef.current = edgeClickCallback;
   });
+  (0, import_react3.useEffect)(() => {
+    onBackgroundClickRef.current = onBackgroundClick;
+  });
+  (0, import_react3.useEffect)(() => {
+    onActiveNodeIdChangeRef.current = onActiveNodeIdChange;
+  });
+  (0, import_react3.useEffect)(() => {
+    activeNodeIdRef.current = activeNodeId;
+  }, [activeNodeId]);
   app == null ? void 0 : app.workspace.onLayoutReady(() => {
     app.workspace.on("resize", () => {
       if (cyRef.current) {
@@ -57432,22 +57452,16 @@ var Graph = ({
       }
     });
   });
-  const registerFileOpenHandler = () => {
-    app == null ? void 0 : app.workspace.on("file-open", () => {
-      var _a, _b;
-      setSelected((_b = (_a = app.workspace.activeEditor) == null ? void 0 : _a.file) == null ? void 0 : _b.path.split(/(\\|\/)/g).pop());
-      setActiveNodeId(void 0);
-    });
-  };
   const registerNodeClickHandler = () => {
     var _a;
     const handleNodeClick = (event) => {
+      var _a2;
       if (event.target.data().priority === 1) {
         let path = event.target.data().path.split(/(\\|\/)/g).pop();
         setSelected(path);
         app == null ? void 0 : app.workspace.openLinkText("", path);
       }
-      setActiveNodeId(event.target.id());
+      (_a2 = onActiveNodeIdChangeRef.current) == null ? void 0 : _a2.call(onActiveNodeIdChangeRef, event.target.id());
     };
     (_a = cyRef.current) == null ? void 0 : _a.on("click", "node", handleNodeClick);
   };
@@ -57498,13 +57512,14 @@ var Graph = ({
   const registerClickHandler = () => {
     var _a;
     const handleClick = (event) => {
-      var _a2, _b, _c;
+      var _a2, _b, _c, _d, _e2;
       if (event.target === cyRef.current) {
         (_a2 = cyRef.current) == null ? void 0 : _a2.edges().deselect();
-        setActiveNodeId(void 0);
-        (_b = cyRef.current) == null ? void 0 : _b.nodes().filter((node2) => node2.data().priority === 1).unselectify();
+        (_b = onActiveNodeIdChangeRef.current) == null ? void 0 : _b.call(onActiveNodeIdChangeRef, void 0);
+        (_c = onBackgroundClickRef.current) == null ? void 0 : _c.call(onBackgroundClickRef);
+        (_d = cyRef.current) == null ? void 0 : _d.nodes().filter((node2) => node2.data().priority === 1).unselectify();
       } else {
-        (_c = cyRef.current) == null ? void 0 : _c.nodes().filter((node2) => node2.data().priority === 1).selectify();
+        (_e2 = cyRef.current) == null ? void 0 : _e2.nodes().filter((node2) => node2.data().priority === 1).selectify();
       }
     };
     (_a = cyRef.current) == null ? void 0 : _a.on("click", handleClick);
@@ -57533,7 +57548,6 @@ var Graph = ({
       minZoom: 0.3,
       maxZoom: 2
     });
-    registerFileOpenHandler();
     registerNodeClickHandler();
     registerClickHandler();
     registerHoverHandler();
@@ -57603,7 +57617,6 @@ var Graph = ({
       (_a = cyRef.current) == null ? void 0 : _a.resize();
     };
     refreshGraph();
-    setActiveNodeId(void 0);
   }, [data]);
   (0, import_react3.useEffect)(() => {
     if (cyRef.current && data.nodes) {
@@ -57624,6 +57637,20 @@ var Graph = ({
   }, [data, selected]);
   (0, import_react3.useEffect)(() => {
     if (cyRef.current) {
+      cyRef.current.batch(() => {
+        var _a;
+        (_a = cyRef.current) == null ? void 0 : _a.nodes().forEach((node2) => {
+          if (cachedNodeIds == null ? void 0 : cachedNodeIds.has(node2.id())) {
+            node2.addClass("has-summary");
+          } else {
+            node2.removeClass("has-summary");
+          }
+        });
+      });
+    }
+  }, [cachedNodeIds, data]);
+  (0, import_react3.useEffect)(() => {
+    if (cyRef.current) {
       cyRef.current.edges().removeClass("edge-active edge-active-incoming");
       cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
       cyRef.current.elements().removeClass("dimmed");
@@ -57631,6 +57658,8 @@ var Graph = ({
         const activeNode = cyRef.current.$id(activeNodeId);
         if (activeNode.length) {
           activeNodeIdRef.current = activeNodeId;
+          activeNode.selectify();
+          activeNode.select();
           activeNode.outgoers("edge").addClass("edge-active");
           activeNode.incomers("edge").addClass("edge-active-incoming");
           activeNode.outgoers("node").addClass("active-neighbor-outgoing");
@@ -57639,6 +57668,7 @@ var Graph = ({
         }
       } else {
         activeNodeIdRef.current = void 0;
+        cyRef.current.nodes().deselect();
       }
     }
   }, [activeNodeId, data]);
@@ -57693,6 +57723,15 @@ var Loader2 = createLucideIcon("Loader2", [
   ["path", { d: "M21 12a9 9 0 1 1-6.219-8.56", key: "13zald" }]
 ]);
 
+// node_modules/lucide-react/dist/esm/icons/rotate-ccw.js
+var RotateCcw = createLucideIcon("RotateCcw", [
+  [
+    "path",
+    { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "1357e3" }
+  ],
+  ["path", { d: "M3 3v5h5", key: "1xhq8a" }]
+]);
+
 // src/shared/animations.ts
 var rotate = ct`
     from {
@@ -57712,6 +57751,65 @@ var Container = st.div`
     justify-content: space-between;
     align-items: center;
     gap: var(--size-4-4);
+`;
+var ContentRow = st.div`
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border-top: 1px solid var(--background-modifier-border);
+`;
+var SidePanel = st.div`
+    width: 220px;
+    min-width: 180px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--background-modifier-border);
+    padding: var(--size-4-3);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2);
+`;
+var SummaryText = st.p`
+    margin: 0;
+    font-size: var(--font-ui-small);
+    line-height: 1.5;
+    color: var(--text-normal);
+    background: rgba(255, 255, 255, 0.08);
+    padding: var(--size-4-2);
+    border-radius: var(--radius-s);
+    user-select: text;
+    cursor: text;
+`;
+var SummaryPlaceholder = st.p`
+    margin: 0;
+    font-size: var(--font-ui-small);
+    line-height: 1.5;
+    color: var(--text-muted);
+    font-style: italic;
+`;
+var RegenerateSummaryButton = st.button`
+    && {
+        align-self: flex-end;
+        padding: 4px;
+        border-radius: var(--radius-s);
+        border: none;
+        background: transparent;
+        color: #ffffff;
+        cursor: pointer;
+        box-shadow: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    &&:hover {
+        background: rgba(255, 255, 255, 0.15);
+    }
+`;
+var RegenerateIcon = st(RotateCcw)`
+    width: 14px;
+    height: 14px;
 `;
 var LoadingIcon = st(Loader2)`
     ${AnimatedRotate};
@@ -60043,13 +60141,29 @@ var Main = () => {
   const [generationProgress, setGenerationProgress] = (0, import_react5.useState)(null);
   const [regeneratingFile, setRegeneratingFile] = (0, import_react5.useState)(null);
   const [firstRender, setFirstRender] = (0, import_react5.useState)(true);
+  const [summary, setSummary] = (0, import_react5.useState)(null);
+  const [summaryLoading, setSummaryLoading] = (0, import_react5.useState)(false);
   const [disabled, setDisabled] = (0, import_react5.useState)(true);
+  const [activeNodeId, setActiveNodeId] = (0, import_react5.useState)(void 0);
+  const [cachedNodeIds, setCachedNodeIds] = (0, import_react5.useState)(/* @__PURE__ */ new Set());
   const disabledRef = (0, import_react5.useRef)(true);
   const pendingReloadRef = (0, import_react5.useRef)(/* @__PURE__ */ new Set());
   const graphCacheRef = (0, import_react5.useRef)(/* @__PURE__ */ new Map());
+  const activeNodePerFileRef = (0, import_react5.useRef)(/* @__PURE__ */ new Map());
+  const nodeSummaryCacheRef = (0, import_react5.useRef)(/* @__PURE__ */ new Map());
+  const selectedFileRef = (0, import_react5.useRef)(selectedFile);
   const abortControllerRef = (0, import_react5.useRef)(null);
   const root = (app == null ? void 0 : app.vault.adapter) instanceof import_obsidian.FileSystemAdapter ? app.vault.adapter.getBasePath().replaceAll("\\", "/") : "/";
   const onNodeClickCallback = async (node2) => {
+    var _a2;
+    const capturedFile = selectedFile;
+    const nodeId = node2.data().id;
+    const priorEntry = activeNodePerFileRef.current.get(capturedFile);
+    const summaryAlreadyInProgress = (priorEntry == null ? void 0 : priorEntry.nodeId) === nodeId && (priorEntry == null ? void 0 : priorEntry.loading) === true;
+    setActiveNodeId(nodeId);
+    if (!summaryAlreadyInProgress) {
+      activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: false });
+    }
     let ignoreResults = false;
     {
       setDisabled(true);
@@ -60059,25 +60173,25 @@ var Main = () => {
           path: root,
           type: "Notes"
         },
-        id: node2.data().id
+        id: nodeId
       };
       await fetchData(
         "http://localhost:8000/knowledge_base/notes/node_to_sentences",
         fetchBody
       ).then((data2) => {
-        var _a2, _b2;
+        var _a3, _b2;
         const selections = [];
         data2.forEach((element) => {
-          var _a3, _b3;
+          var _a4, _b3;
           selections.push(
             getEditorPosition_default(
-              ((_b3 = (_a3 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a3.editor) == null ? void 0 : _b3.getValue()) || "",
+              ((_b3 = (_a4 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a4.editor) == null ? void 0 : _b3.getValue()) || "",
               element.content
             )
           );
         });
         if (active === selectedFile && !ignoreResults && selections.length > 0)
-          (_b2 = (_a2 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a2.editor) == null ? void 0 : _b2.setSelections(
+          (_b2 = (_a3 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a3.editor) == null ? void 0 : _b2.setSelections(
             selections
           );
       }).catch(() => {
@@ -60085,9 +60199,70 @@ var Main = () => {
       });
       setDisabled(false);
     }
+    const cacheKey = `${capturedFile}::${nodeId}`;
+    if (summaryAlreadyInProgress) {
+      return () => {
+        ignoreResults = true;
+      };
+    }
+    if (nodeSummaryCacheRef.current.has(cacheKey)) {
+      const cached = (_a2 = nodeSummaryCacheRef.current.get(cacheKey)) != null ? _a2 : null;
+      setSummary(cached);
+      setSummaryLoading(false);
+      activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: cached, loading: false });
+      return () => {
+        ignoreResults = true;
+      };
+    }
+    fetchAndCacheSummary(nodeId, capturedFile);
     return () => {
       ignoreResults = true;
     };
+  };
+  const fetchAndCacheSummary = (nodeId, capturedFile, variation = false) => {
+    const cacheKey = `${capturedFile}::${nodeId}`;
+    setSummary(null);
+    setSummaryLoading(true);
+    activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: true });
+    fetchData(
+      "http://localhost:8000/knowledge_base/notes/node_summary",
+      { repo: { path: root, type: "Notes" }, id: nodeId, regenerate: variation }
+    ).then((result) => {
+      var _a2;
+      const content = (_a2 = result == null ? void 0 : result.content) != null ? _a2 : null;
+      nodeSummaryCacheRef.current.set(cacheKey, content);
+      const currentEntry = activeNodePerFileRef.current.get(capturedFile);
+      if ((currentEntry == null ? void 0 : currentEntry.nodeId) === nodeId) {
+        activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: content, loading: false });
+      }
+      if (selectedFileRef.current === capturedFile) {
+        setSummary(content);
+        setSummaryLoading(false);
+        setCachedNodeIds((prev2) => /* @__PURE__ */ new Set([...prev2, nodeId]));
+      }
+    }).catch(() => {
+      const currentEntry = activeNodePerFileRef.current.get(capturedFile);
+      if ((currentEntry == null ? void 0 : currentEntry.nodeId) === nodeId) {
+        activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: currentEntry.summary, loading: false });
+      }
+      if (selectedFileRef.current === capturedFile) {
+        setSummaryLoading(false);
+      }
+    });
+  };
+  const handleRegenerateSummary = () => {
+    if (!activeNodeId)
+      return;
+    const capturedFile = selectedFile;
+    const nodeId = activeNodeId;
+    const cacheKey = `${capturedFile}::${nodeId}`;
+    nodeSummaryCacheRef.current.delete(cacheKey);
+    setCachedNodeIds((prev2) => {
+      const next3 = new Set(prev2);
+      next3.delete(nodeId);
+      return next3;
+    });
+    fetchAndCacheSummary(nodeId, capturedFile, true);
   };
   const onEdgeClickCallback = async (edge) => {
     if (disabled)
@@ -60132,6 +60307,12 @@ var Main = () => {
     return () => {
       ignoreResults = true;
     };
+  };
+  const handleActiveNodeIdChange = (id) => {
+    setActiveNodeId(id);
+    if (id === void 0) {
+      activeNodePerFileRef.current.delete(selectedFile);
+    }
   };
   const handleStop = () => {
     var _a2;
@@ -60178,6 +60359,13 @@ var Main = () => {
           setGraphLoading(false);
           setRegeneratingFile(null);
           graphCacheRef.current.delete(filePath);
+          activeNodePerFileRef.current.delete(filePath);
+          nodeSummaryCacheRef.current.forEach((_2, key) => {
+            if (key.startsWith(`${filePath}::`))
+              nodeSummaryCacheRef.current.delete(key);
+          });
+          if (filePath === selectedFile)
+            setCachedNodeIds(/* @__PURE__ */ new Set());
           const currentFile = ((_b2 = (_a2 = app == null ? void 0 : app.workspace.activeEditor) == null ? void 0 : _a2.file) == null ? void 0 : _b2.path) || "";
           if (currentFile === filePath) {
             setSelectedFile("");
@@ -60214,6 +60402,16 @@ var Main = () => {
     graphCacheRef.current.delete(file.path);
     if (oldPath)
       graphCacheRef.current.delete(oldPath);
+    nodeSummaryCacheRef.current.forEach((_2, key) => {
+      if (key.startsWith(`${file.path}::`))
+        nodeSummaryCacheRef.current.delete(key);
+    });
+    if (oldPath) {
+      nodeSummaryCacheRef.current.forEach((_2, key) => {
+        if (key.startsWith(`${oldPath}::`))
+          nodeSummaryCacheRef.current.delete(key);
+      });
+    }
     fetchData(
       `http://localhost:8000/knowledge_base/notes/${OPERATIONS_MAP[operation].url}_file`,
       fetchBody,
@@ -60252,8 +60450,23 @@ var Main = () => {
     disabledRef.current = disabled;
   }, [disabled]);
   (0, import_react5.useEffect)(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
+  (0, import_react5.useEffect)(() => {
+    var _a2, _b2, _c2;
     if (!firstRender) {
       setData({ nodes: [], edges: [] });
+      const saved = activeNodePerFileRef.current.get(selectedFile);
+      setActiveNodeId((_a2 = saved == null ? void 0 : saved.nodeId) != null ? _a2 : void 0);
+      setSummary((_b2 = saved == null ? void 0 : saved.summary) != null ? _b2 : null);
+      setSummaryLoading((_c2 = saved == null ? void 0 : saved.loading) != null ? _c2 : false);
+      const filePrefix = `${selectedFile}::`;
+      const restoredIds = /* @__PURE__ */ new Set();
+      nodeSummaryCacheRef.current.forEach((_2, key) => {
+        if (key.startsWith(filePrefix))
+          restoredIds.add(key.slice(filePrefix.length));
+      });
+      setCachedNodeIds(restoredIds);
       populateGraphData(false);
     }
   }, [selectedFile]);
@@ -60366,17 +60579,32 @@ var Main = () => {
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(GenerationProgressBar, { $percent: (_c = generationProgress == null ? void 0 : generationProgress.percent) != null ? _c : 0 })
     ] }),
     disabled && !graphLoading && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(GlobalLoadingContainer, { children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(LoadingIcon, {}) }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
-      Graph_default,
-      {
-        data,
-        nodeClickCallback: onNodeClickCallback,
-        edgeClickCallback: onEdgeClickCallback,
-        visible: !(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading),
-        disabled,
-        filePath: selectedFile
-      }
-    )
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(ContentRow, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+        Graph_default,
+        {
+          data,
+          activeNodeId,
+          onActiveNodeIdChange: handleActiveNodeIdChange,
+          cachedNodeIds,
+          nodeClickCallback: onNodeClickCallback,
+          edgeClickCallback: onEdgeClickCallback,
+          onBackgroundClick: () => {
+            setSummary(null);
+            setSummaryLoading(false);
+          },
+          visible: !(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading),
+          disabled,
+          filePath: selectedFile
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(SidePanel, { children: [
+        summaryLoading && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(LoadingIcon, {}),
+        !summaryLoading && summary && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(SummaryText, { children: summary }),
+        !summaryLoading && summary && activeNodeId && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RegenerateSummaryButton, { onClick: handleRegenerateSummary, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RegenerateIcon, {}) }),
+        !summaryLoading && !summary && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(SummaryPlaceholder, { children: "Click a node to see its summary" })
+      ] })
+    ] })
   ] });
 };
 var Main_default = Main;

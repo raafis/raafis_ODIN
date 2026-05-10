@@ -37,15 +37,6 @@ class VaultManager:
                         self.mm.db.execute(stmt)
                     except Exception as e:
                         print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
-            else:
-                existing = list(self.mm.run_select_query(
-                    f"MATCH (n {{file_path: '{file_path}'}}) RETURN count(n) as c"
-                ))
-                has_nodes = existing[0]['c'] > 0 if existing else False
-                if not has_nodes:
-                    res_queries = self.ta.text_to_cypher_chunked(
-                        file_text, self.vault_path, file_path)
-                    self.mm.run_update_query(res_queries)
             # Remove any nodes that were created without a file_path (stale/partial runs)
             try:
                 self.mm.db.execute(

@@ -734,6 +734,27 @@ class TextAnalizer:
     def debug_code(self: TextAnalizer, text: str) -> str:
         return self._general_code_question('debug', text)
 
+    def summarize_node(self: TextAnalizer, node_description: str, sentences: list, variation: bool = False) -> str:
+        context = "\n".join(sentences) if sentences else "No direct source sentences found."
+        system_content = (
+            "You are a concise knowledge assistant. Given a graph node's description and "
+            "relevant source sentences from a note, write a 1-2 sentence plain-English summary "
+            "explaining what this concept means in the context of the note. Be specific and factual."
+        )
+        if variation:
+            system_content += (
+                " The user has requested a fresh summary — provide a different angle, "
+                "emphasis, or phrasing than you would typically use."
+            )
+        self.messages = [
+            SystemMessage(content=system_content),
+            HumanMessage(content=(
+                f"Node description:\n{node_description}\n\n"
+                f"Source context from the note:\n{context}"
+            )),
+        ]
+        return self.model.invoke(self.messages).content.strip()
+
 
 if __name__ == '__main__':
 

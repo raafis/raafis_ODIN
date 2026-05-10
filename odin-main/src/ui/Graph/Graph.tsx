@@ -14,6 +14,10 @@ interface GraphProps {
 	};
 	nodeClickCallback?: (node: NodeSingular) => void;
 	edgeClickCallback?: (edge: EdgeSingular) => void;
+	onBackgroundClick?: () => void;
+	onActiveNodeIdChange?: (id: string | undefined) => void;
+	activeNodeId?: string;
+	cachedNodeIds?: Set<string>;
 	visible: boolean;
 	disabled: boolean;
 	filePath: string;
@@ -23,22 +27,30 @@ const Graph: React.FC<GraphProps> = ({
 	data,
 	nodeClickCallback,
 	edgeClickCallback,
+	onBackgroundClick,
+	onActiveNodeIdChange,
+	activeNodeId,
+	cachedNodeIds,
 	visible,
 	disabled,
 	filePath,
 }) => {
 	const [selected, setSelected] = useState<string | undefined>(undefined);
-	const [activeNodeId, setActiveNodeId] = useState<string | undefined>(undefined);
 	const activeNodeIdRef = useRef<string | undefined>(undefined);
 	const cyRef = useRef<cytoscape.Core | null>(null);
 	const positionCacheRef = useRef<Map<string, Record<string, { x: number; y: number }>>>(new Map());
 	const filePathRef = useRef<string>(filePath);
 	const cacheKeyRef = useRef<string>("");
 	const edgeClickCallbackRef = useRef(edgeClickCallback);
+	const onBackgroundClickRef = useRef(onBackgroundClick);
+	const onActiveNodeIdChangeRef = useRef(onActiveNodeIdChange);
 	const app = useApp();
 
 	useEffect(() => { filePathRef.current = filePath; }, [filePath]);
 	useEffect(() => { edgeClickCallbackRef.current = edgeClickCallback; });
+	useEffect(() => { onBackgroundClickRef.current = onBackgroundClick; });
+	useEffect(() => { onActiveNodeIdChangeRef.current = onActiveNodeIdChange; });
+	useEffect(() => { activeNodeIdRef.current = activeNodeId; }, [activeNodeId]);
 
 	app?.workspace.onLayoutReady(() => {
 		app.workspace.on("resize", () => {
@@ -48,13 +60,6 @@ const Graph: React.FC<GraphProps> = ({
 		});
 	});
 
-	const registerFileOpenHandler = () => {
-		app?.workspace.on("file-open", () => {
-			setSelected(app.workspace.activeEditor?.file?.path.split(/(\\|\/)/g).pop());
-			setActiveNodeId(undefined);
-		});
-	};
-
 	const registerNodeClickHandler = () => {
 		const handleNodeClick = (event: cytoscape.EventObject) => {
 			if (event.target.data().priority === 1) {
@@ -62,7 +67,7 @@ const Graph: React.FC<GraphProps> = ({
 				setSelected(path);
 				app?.workspace.openLinkText("", path);
 			}
-			setActiveNodeId(event.target.id());
+			onActiveNodeIdChangeRef.current?.(event.target.id());
 		};
 		cyRef.current?.on("click", "node", handleNodeClick);
 	};
@@ -118,7 +123,8 @@ const Graph: React.FC<GraphProps> = ({
 		const handleClick = (event: cytoscape.EventObject) => {
 			if (event.target === cyRef.current) {
 				cyRef.current?.edges().deselect();
-				setActiveNodeId(undefined);
+				onActiveNodeIdChangeRef.current?.(undefined);
+				onBackgroundClickRef.current?.();
 				cyRef.current
 					?.nodes()
 					.filter((node) => node.data().priority === 1)
@@ -156,7 +162,6 @@ const Graph: React.FC<GraphProps> = ({
 			maxZoom: 2,
 		});
 
-		registerFileOpenHandler();
 		registerNodeClickHandler();
 		registerClickHandler();
 		registerHoverHandler();
@@ -225,7 +230,6 @@ const Graph: React.FC<GraphProps> = ({
 		};
 
 		refreshGraph();
-		setActiveNodeId(undefined);
 	}, [data]);
 
 	useEffect(() => {
@@ -246,6 +250,20 @@ const Graph: React.FC<GraphProps> = ({
 
 	useEffect(() => {
 		if (cyRef.current) {
+			cyRef.current.batch(() => {
+				cyRef.current?.nodes().forEach(node => {
+					if (cachedNodeIds?.has(node.id())) {
+						node.addClass("has-summary");
+					} else {
+						node.removeClass("has-summary");
+					}
+				});
+			});
+		}
+	}, [cachedNodeIds, data]);
+
+	useEffect(() => {
+		if (cyRef.current) {
 			cyRef.current.edges().removeClass("edge-active edge-active-incoming");
 			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
 			cyRef.current.elements().removeClass("dimmed");
@@ -253,6 +271,8 @@ const Graph: React.FC<GraphProps> = ({
 				const activeNode = cyRef.current.$id(activeNodeId);
 				if (activeNode.length) {
 					activeNodeIdRef.current = activeNodeId;
+					activeNode.selectify();
+					activeNode.select();
 					activeNode.outgoers("edge").addClass("edge-active");
 					activeNode.incomers("edge").addClass("edge-active-incoming");
 					activeNode.outgoers("node").addClass("active-neighbor-outgoing");
@@ -266,6 +286,7 @@ const Graph: React.FC<GraphProps> = ({
 				}
 			} else {
 				activeNodeIdRef.current = undefined;
+				cyRef.current.nodes().deselect();
 			}
 		}
 	}, [activeNodeId, data]);
