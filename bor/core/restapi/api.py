@@ -52,10 +52,13 @@ class Question(BaseModel):
     repo: Repo
     prompt: str
     type: Union[Type, None] = None
+    file_path: Union[str, None] = None
+    note_content: Union[str, None] = None
 
 
 class Answer(BaseModel):
     content: str
+    node_ids: list[int] = []
 
 
 class Node(BaseModel):
@@ -110,14 +113,69 @@ def delete_all_for_repo(repo: Repo) -> None:
     return
 
 
+def _build_kg_summary(file_path: str) -> tuple[str, dict[int, str]]:
+    try:
+        local_mm = MemgraphManager()
+        data = local_mm.export_data_for_file_path(file_path)
+        if not data:
+            return "", {}
+        nodes = {item["id"]: item["properties"].get("name", f"node_{item['id']}")
+                 for item in data if item.get("type") == "node"}
+        edges = [(nodes.get(item["start"], "?"), item["label"], nodes.get(item["end"], "?"))
+                 for item in data if item.get("type") == "relationship"]
+        lines = []
+        if nodes:
+            lines.append("Entities: " + ", ".join(nodes.values()))
+        if edges:
+            lines.append("Relationships:")
+            for src, rel, dst in edges:
+                lines.append(f"  {src} --[{rel}]--> {dst}")
+        return "\n".join(lines), nodes
+    except Exception:
+        return "", {}
+
+
 @app.post("/knowledge_base/general/ask")
 def ask_repo(question: Question) -> Answer:
-    if question.type == Type.NOTES:
-        na = NotesQueryAgent(question.repo.path)
-        return Answer(content=na.ask(question.prompt))
+    try:
+        node_ids: list[int] = []
+        note_content = question.note_content
+        if not note_content and question.file_path:
+            try:
+                import pathlib
+                note_content = pathlib.Path(question.file_path).read_text(errors="ignore")[:6000]
+            except Exception:
+                note_content = None
 
-    ca = CodeQueryAgent(question.repo.path)
-    return Answer(content=ca.ask(question.prompt))
+        if question.type == Type.NOTES and note_content:
+            from langchain_ollama import ChatOllama
+            llm = ChatOllama(
+                model=constants.LLM_MODEL_NAME,
+                base_url=constants.OLLAMA_BASE_URL,
+                temperature=constants.LLM_MODEL_TEMPERATURE,
+            )
+            kg_summary, node_map = _build_kg_summary(question.file_path) if question.file_path else ("", {})
+            kg_section = f"\n\nKnowledge graph for this note:\n{kg_summary}" if kg_summary else ""
+            prompt = (
+                f"The following is the content of the current note:\n\n"
+                f"{note_content}"
+                f"{kg_section}\n\n"
+                f"Answer the following question using the note and its knowledge graph as your primary reference. Only answer if the question is relevant to the topics in the note — if it is completely unrelated, say it is out of scope. For questions that are relevant but not fully covered by the note, you may supplement with your general knowledge, clearly indicating what comes from your notes versus general knowledge:\n{question.prompt}"
+            )
+            result = llm.invoke(prompt).content
+            result_lower = result.lower()
+            node_ids = [nid for nid, name in node_map.items() if name.lower() in result_lower]
+        elif question.type == Type.NOTES:
+            na = NotesQueryAgent(question.repo.path, file_path=question.file_path)
+            result, node_ids = na.ask_with_nodes(question.prompt)
+        else:
+            ca = CodeQueryAgent(question.repo.path)
+            result = ca.ask(question.prompt)
+        if not result or not result.strip():
+            return Answer(content="I could not generate a response. Make sure the knowledge graph has been generated for this vault and that Ollama is running.")
+        return Answer(content=result, node_ids=node_ids)
+    except Exception as e:
+        return Answer(content=f"Error: {e}")
 
 
 @app.post("/knowledge_base/general/get_schema")

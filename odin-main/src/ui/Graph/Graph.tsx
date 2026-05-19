@@ -18,6 +18,8 @@ interface GraphProps {
 	onActiveNodeIdChange?: (id: string | undefined) => void;
 	activeNodeId?: string;
 	cachedNodeIds?: Set<string>;
+	loadingNodeId?: string;
+	chatHighlightedNodeIds?: Set<string>;
 	visible: boolean;
 	disabled: boolean;
 	filePath: string;
@@ -31,6 +33,8 @@ const Graph: React.FC<GraphProps> = ({
 	onActiveNodeIdChange,
 	activeNodeId,
 	cachedNodeIds,
+	loadingNodeId,
+	chatHighlightedNodeIds,
 	visible,
 	disabled,
 	filePath,
@@ -74,6 +78,7 @@ const Graph: React.FC<GraphProps> = ({
 
 	const registerHoverHandler = () => {
 		cyRef.current?.on("mouseover", "node", (event) => {
+			const c1 = cyRef.current?.container(); if (c1) c1.style.cursor = "pointer";
 			const node = event.target;
 			node.addClass("hovered");
 			node.outgoers("edge").addClass("hovered");
@@ -91,6 +96,7 @@ const Graph: React.FC<GraphProps> = ({
 			cyRef.current?.elements().not(excluded).addClass("dimmed");
 		});
 		cyRef.current?.on("mouseout", "node", (event) => {
+			const c2 = cyRef.current?.container(); if (c2) c2.style.cursor = "";
 			const node = event.target;
 			node.removeClass("hovered");
 			node.outgoers("edge").removeClass("hovered");
@@ -112,9 +118,11 @@ const Graph: React.FC<GraphProps> = ({
 			}
 		});
 		cyRef.current?.on("mouseover", "edge", (event) => {
+			const c1 = cyRef.current?.container(); if (c1) c1.style.cursor = "pointer";
 			event.target.addClass("hovered");
 		});
 		cyRef.current?.on("mouseout", "edge", (event) => {
+			const c2 = cyRef.current?.container(); if (c2) c2.style.cursor = "";
 			event.target.removeClass("hovered");
 		});
 	};
@@ -263,11 +271,39 @@ const Graph: React.FC<GraphProps> = ({
 	}, [cachedNodeIds, data]);
 
 	useEffect(() => {
+		if (!cyRef.current) return;
+		cyRef.current.nodes().removeClass("loading-background");
+		if (loadingNodeId) {
+			const node = cyRef.current.$id(loadingNodeId);
+			if (node.length) node.addClass("loading-background");
+		}
+	}, [loadingNodeId, data]);
+
+	useEffect(() => {
+		if (!cyRef.current) return;
+		cyRef.current.nodes().removeClass("chat-highlighted");
+		cyRef.current.edges().removeClass("chat-highlighted chat-front");
+		chatHighlightedNodeIds?.forEach(id => {
+			const node = cyRef.current?.$id(id);
+			if (node?.length) node.addClass("chat-highlighted");
+		});
+		cyRef.current.edges().forEach(edge => {
+			if (
+				chatHighlightedNodeIds?.has(edge.source().id()) &&
+				chatHighlightedNodeIds?.has(edge.target().id())
+			) {
+				edge.addClass("chat-highlighted chat-front");
+			}
+		});
+	}, [chatHighlightedNodeIds, data]);
+
+	useEffect(() => {
 		if (cyRef.current) {
 			cyRef.current.edges().removeClass("edge-active edge-active-incoming");
 			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
 			cyRef.current.elements().removeClass("dimmed");
 			if (activeNodeId) {
+				cyRef.current.edges().removeClass("chat-front");
 				const activeNode = cyRef.current.$id(activeNodeId);
 				if (activeNode.length) {
 					activeNodeIdRef.current = activeNodeId;

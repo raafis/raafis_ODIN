@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import Graph from "../Graph/Graph";
 import PromptBar from "../PromptBar/PromptBar";
+import ChatPanel, { ChatEntry } from "../ChatPanel/ChatPanel";
 import * as S from "./Main.styles";
 import { useApp } from "../hooks/useApp";
 import { Edge, Node } from "src/shared/types/graphTypes";
@@ -34,6 +35,29 @@ const Main: React.FC = (): React.JSX.Element => {
 	const [copied, setCopied] = useState<boolean>(false);
 	const [cachedNodeIds, setCachedNodeIds] = useState<Set<string>>(new Set());
 	const [hasNonTitleContent, setHasNonTitleContent] = useState<boolean>(false);
+	const [sideTab, setSideTab] = useState<"summary" | "chat">("summary");
+	const [chatHistory, setChatHistory] = useState<Map<string, ChatEntry[]>>(new Map());
+	const chatMessages = chatHistory.get(selectedFile) ?? [];
+	const setChatMessages: React.Dispatch<React.SetStateAction<ChatEntry[]>> = (action) => {
+		setChatHistory(prev => {
+			const next = new Map(prev);
+			const current = prev.get(selectedFile) ?? [];
+			next.set(selectedFile, typeof action === "function" ? action(current) : action);
+			return next;
+		});
+	};
+	const [chatError, setChatError] = useState("");
+	const [chatHighlightedNodeIds, setChatHighlightedNodeIds] = useState<Set<string>>(new Set());
+	const [chatLoadingMap, setChatLoadingMap] = useState<Map<string, boolean>>(new Map());
+	const chatLoading = chatLoadingMap.get(selectedFile) ?? false;
+	const setChatLoading: React.Dispatch<React.SetStateAction<boolean>> = (action) => {
+		setChatLoadingMap(prev => {
+			const next = new Map(prev);
+			const current = prev.get(selectedFile) ?? false;
+			next.set(selectedFile, typeof action === "function" ? action(current) : action);
+			return next;
+		});
+	};
 	const disabledRef = useRef<boolean>(true);
 	const pendingReloadRef = useRef<Set<string>>(new Set());
 	const graphCacheRef = useRef<Map<string, { nodes: Node[]; edges: Edge[] }>>(new Map());
@@ -42,7 +66,13 @@ const Main: React.FC = (): React.JSX.Element => {
 	const lastHighlightedEditorRef = useRef<any>(null);
 	const selectedFileRef = useRef<string>(selectedFile);
 	const abortControllerRef = useRef<AbortController | null>(null);
+	const summaryAbortControllerRef = useRef<AbortController | null>(null);
+	const summaryLoadingNodeRef = useRef<{ file: string; nodeId: string } | null>(null);
 	const graphEverExistedRef = useRef<Set<string>>(new Set());
+	const [backgroundLoadingMap, setBackgroundLoadingMap] = useState<Map<string, string>>(new Map());
+	const backgroundLoadingNodeId = backgroundLoadingMap.get(selectedFile);
+	const activeNodeIdRef = useRef<string | undefined>(undefined);
+	useEffect(() => { activeNodeIdRef.current = activeNodeId; }, [activeNodeId]);
 
 	const root =
 		app?.vault.adapter instanceof FileSystemAdapter
@@ -60,8 +90,16 @@ const Main: React.FC = (): React.JSX.Element => {
 			priorEntry?.nodeId === nodeId && priorEntry?.loading === true;
 
 		setActiveNodeId(nodeId);
+		if (summaryLoadingNodeRef.current?.file !== capturedFile) {
+			setBackgroundLoadingMap(prev => { const n = new Map(prev); n.delete(capturedFile); return n; });
+		}
 		if (!summaryAlreadyInProgress) {
 			activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: false });
+		} else {
+			const entry = activeNodePerFileRef.current.get(capturedFile);
+			if (entry) activeNodePerFileRef.current.set(capturedFile, { ...entry, backgroundDeselected: false });
+			setSummaryLoading(true);
+			setSummary(null);
 		}
 
 		let ignoreResults = false;
@@ -114,6 +152,16 @@ const Main: React.FC = (): React.JSX.Element => {
 			return () => { ignoreResults = true; };
 		}
 
+		const isLoadingInBackground =
+			summaryLoadingNodeRef.current?.file === capturedFile &&
+			summaryLoadingNodeRef.current?.nodeId === nodeId;
+		if (isLoadingInBackground) {
+			activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: true });
+			setSummaryLoading(true);
+			setSummary(null);
+			return () => { ignoreResults = true; };
+		}
+
 		if (nodeSummaryCacheRef.current.has(cacheKey)) {
 			const cached = nodeSummaryCacheRef.current.get(cacheKey) ?? null;
 			setSummary(cached);
@@ -135,10 +183,16 @@ const Main: React.FC = (): React.JSX.Element => {
 		setSummary(null);
 		setSummaryLoading(true);
 		activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: null, loading: true });
+		summaryAbortControllerRef.current?.abort();
+		const ac = new AbortController();
+		summaryAbortControllerRef.current = ac;
+		summaryLoadingNodeRef.current = { file: capturedFile, nodeId };
 		fetchData(
 			"http://localhost:8000/knowledge_base/notes/node_summary",
-			{ repo: { path: root, type: "Notes" }, id: nodeId, regenerate: variation }
+			{ repo: { path: root, type: "Notes" }, id: nodeId, regenerate: variation },
+			undefined, undefined, ac.signal
 		).then(result => {
+			summaryLoadingNodeRef.current = null;
 			const content = result?.content ?? null;
 			nodeSummaryCacheRef.current.set(cacheKey, content);
 			const currentEntry = activeNodePerFileRef.current.get(capturedFile);
@@ -146,18 +200,24 @@ const Main: React.FC = (): React.JSX.Element => {
 				activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: content, loading: false });
 			}
 			if (selectedFileRef.current === capturedFile) {
-				setSummary(content);
-				setSummaryLoading(false);
+				setBackgroundLoadingMap(prev => { const n = new Map(prev); if (n.get(capturedFile) === nodeId) n.delete(capturedFile); return n; });
 				setCachedNodeIds(prev => new Set([...prev, nodeId]));
+				if (activeNodeIdRef.current === nodeId) {
+					setSummary(content);
+					setSummaryLoading(false);
+				}
 			}
-		}).catch(() => {
+		}).catch((error: any) => {
+			if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') return;
+			summaryLoadingNodeRef.current = null;
 			new Notice("Failed to get node summary.");
 			const currentEntry = activeNodePerFileRef.current.get(capturedFile);
 			if (currentEntry?.nodeId === nodeId) {
 				activeNodePerFileRef.current.set(capturedFile, { nodeId, summary: currentEntry.summary, loading: false });
 			}
 			if (selectedFileRef.current === capturedFile) {
-				setSummaryLoading(false);
+				setBackgroundLoadingMap(prev => { const n = new Map(prev); if (n.get(capturedFile) === nodeId) n.delete(capturedFile); return n; });
+				if (activeNodeIdRef.current === nodeId) setSummaryLoading(false);
 			}
 		});
 	};
@@ -196,6 +256,18 @@ const Main: React.FC = (): React.JSX.Element => {
 		nodeSummaryCacheRef.current.delete(cacheKey);
 		setCachedNodeIds(prev => { const next = new Set(prev); next.delete(nodeId); return next; });
 		fetchAndCacheSummary(nodeId, capturedFile, true);
+	};
+
+	const handleStopSummary = () => {
+		summaryAbortControllerRef.current?.abort();
+		summaryAbortControllerRef.current = null;
+		summaryLoadingNodeRef.current = null;
+		setSummaryLoading(false);
+		setBackgroundLoadingMap(prev => { const n = new Map(prev); n.delete(selectedFile); return n; });
+		const entry = activeNodePerFileRef.current.get(selectedFile);
+		if (entry?.loading) {
+			activeNodePerFileRef.current.set(selectedFile, { ...entry, loading: false });
+		}
 	};
 
 	const onEdgeClickCallback = async (edge: EdgeSingular) => {
@@ -251,7 +323,26 @@ const Main: React.FC = (): React.JSX.Element => {
 	const handleActiveNodeIdChange = (id: string | undefined) => {
 		setActiveNodeId(id);
 		if (id === undefined) {
-			activeNodePerFileRef.current.delete(selectedFile);
+			const entry = activeNodePerFileRef.current.get(selectedFile);
+			if (entry?.loading) {
+				activeNodePerFileRef.current.set(selectedFile, { ...entry, backgroundDeselected: true });
+				setBackgroundLoadingMap(prev => { const n = new Map(prev); n.set(selectedFile, entry.nodeId); return n; });
+			} else {
+				activeNodePerFileRef.current.delete(selectedFile);
+			}
+		} else {
+			if (cachedNodeIds.has(id)) {
+				setSideTab("summary");
+			}
+			if (summaryLoadingNodeRef.current?.file === selectedFile) {
+				setBackgroundLoadingMap(prev => {
+					const n = new Map(prev);
+					n.set(selectedFile, summaryLoadingNodeRef.current!.nodeId);
+					return n;
+				});
+			} else {
+				setBackgroundLoadingMap(prev => { const n = new Map(prev); n.delete(selectedFile); return n; });
+			}
 		}
 	};
 
@@ -353,6 +444,10 @@ const Main: React.FC = (): React.JSX.Element => {
 						if (key.startsWith(`${filePath}::`)) nodeSummaryCacheRef.current.delete(key);
 					});
 					if (filePath === selectedFile) setCachedNodeIds(new Set());
+					setChatHistory(prev => { const next = new Map(prev); next.delete(filePath); return next; });
+					setChatLoadingMap(prev => { const next = new Map(prev); next.delete(filePath); return next; });
+					if (filePath === selectedFile) setChatError("");
+					setBackgroundLoadingMap(prev => { const n = new Map(prev); n.delete(filePath); return n; });
 					const currentFile = selectedFileRef.current;
 					if (currentFile === filePath) {
 						setSelectedFile("");
@@ -465,9 +560,15 @@ const Main: React.FC = (): React.JSX.Element => {
 			setData({ nodes: [], edges: [] });
 			setHasNonTitleContent(false);
 			const saved = activeNodePerFileRef.current.get(selectedFile);
-			setActiveNodeId(saved?.nodeId ?? undefined);
-			setSummary(saved?.summary ?? null);
-			setSummaryLoading(saved?.loading ?? false);
+			if (saved && !saved.backgroundDeselected) {
+				setActiveNodeId(saved.nodeId);
+				setSummary(saved.summary);
+				setSummaryLoading(saved.loading);
+			} else {
+				setActiveNodeId(undefined);
+				setSummary(null);
+				setSummaryLoading(false);
+			}
 			const filePrefix = `${selectedFile}::`;
 			const restoredIds = new Set<string>();
 			nodeSummaryCacheRef.current.forEach((_, key) => {
@@ -477,6 +578,11 @@ const Main: React.FC = (): React.JSX.Element => {
 			updateHasNonTitleContent(selectedFile);
 			populateGraphData(false);
 		}
+	}, [selectedFile]);
+
+	useEffect(() => {
+		setChatError("");
+		setChatHighlightedNodeIds(new Set());
 	}, [selectedFile]);
 
 	useEffect(() => {
@@ -654,11 +760,14 @@ const Main: React.FC = (): React.JSX.Element => {
 						activeNodeId={activeNodeId}
 						onActiveNodeIdChange={handleActiveNodeIdChange}
 						cachedNodeIds={cachedNodeIds}
+						loadingNodeId={backgroundLoadingNodeId}
 						nodeClickCallback={onNodeClickCallback}
 						edgeClickCallback={onEdgeClickCallback}
+						chatHighlightedNodeIds={chatHighlightedNodeIds}
 						onBackgroundClick={() => {
 						setSummary(null);
 						setSummaryLoading(false);
+						setChatHighlightedNodeIds(new Set());
 						clearHighlight();
 					}}
 						visible={!(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading)}
@@ -676,29 +785,56 @@ const Main: React.FC = (): React.JSX.Element => {
 					)}
 				</S.GraphWrapper>
 				<S.SidePanel>
-					{regeneratingFile !== selectedFile && summaryLoading && <S.LoadingIcon />}
-					{regeneratingFile !== selectedFile && !summaryLoading && summary && <S.SummaryText>{summary}</S.SummaryText>}
-					{regeneratingFile !== selectedFile && !summaryLoading && summary && (
-						<S.ButtonRow>
-							{copied && <S.CopiedToast>copied to clipboard</S.CopiedToast>}
-							<S.CopyButton onClick={handleCopySummary}>
-								{copied ? <S.CheckIcon /> : <S.CopyIcon />}
-							</S.CopyButton>
-							{activeNodeId && (
-								<S.RegenerateSummaryButton onClick={handleRegenerateSummary}>
-									<S.RegenerateIcon />
-								</S.RegenerateSummaryButton>
+					<S.SideTabBar>
+						<S.SideTabButton $active={sideTab === "summary"} onClick={() => setSideTab("summary")}>Summary</S.SideTabButton>
+						<S.SideTabButton $active={sideTab === "chat"} onClick={() => setSideTab("chat")}>Chat</S.SideTabButton>
+					</S.SideTabBar>
+					{sideTab === "summary" && (
+						<>
+							{regeneratingFile !== selectedFile && summaryLoading && (
+								<S.SummaryLoadingRow>
+									<S.LoadingIcon />
+									<S.SummaryStopButton onClick={handleStopSummary}>Cancel</S.SummaryStopButton>
+								</S.SummaryLoadingRow>
 							)}
-							<S.TrashButton onClick={handleClearSummary}>
-								<S.TrashIcon />
-							</S.TrashButton>
-						</S.ButtonRow>
+							{regeneratingFile !== selectedFile && !summaryLoading && summary && <S.SummaryText>{summary}</S.SummaryText>}
+							{regeneratingFile !== selectedFile && !summaryLoading && summary && (
+								<S.ButtonRow>
+									{copied && <S.CopiedToast>copied to clipboard</S.CopiedToast>}
+									<S.CopyButton onClick={handleCopySummary}>
+										{copied ? <S.CheckIcon /> : <S.CopyIcon />}
+									</S.CopyButton>
+									{activeNodeId && (
+										<S.RegenerateSummaryButton onClick={handleRegenerateSummary}>
+											<S.RegenerateIcon />
+										</S.RegenerateSummaryButton>
+									)}
+									<S.TrashButton onClick={handleClearSummary}>
+										<S.TrashIcon />
+									</S.TrashButton>
+								</S.ButtonRow>
+							)}
+							{regeneratingFile !== selectedFile && !summaryLoading && !summary && !activeNodeId && data.nodes.length > 0 && (
+								<S.SummaryPlaceholder>Click a node to see its connections</S.SummaryPlaceholder>
+							)}
+							{regeneratingFile !== selectedFile && !summaryLoading && !summary && activeNodeId && (
+								<S.GetSummaryButton onClick={handleGetSummary}>Get Summary</S.GetSummaryButton>
+							)}
+						</>
 					)}
-					{regeneratingFile !== selectedFile && !summaryLoading && !summary && !activeNodeId && data.nodes.length > 0 && (
-						<S.SummaryPlaceholder>Click a node to see its connections</S.SummaryPlaceholder>
-					)}
-					{regeneratingFile !== selectedFile && !summaryLoading && !summary && activeNodeId && (
-						<S.GetSummaryButton onClick={handleGetSummary}>Get Summary</S.GetSummaryButton>
+					{sideTab === "chat" && (
+						<ChatPanel
+							root={root}
+							filePath={selectedFile}
+							messages={chatMessages}
+							setMessages={setChatMessages}
+							error={chatError}
+							setError={setChatError}
+							loading={chatLoading}
+							setLoading={setChatLoading}
+							onHighlightNodes={(ids) => setChatHighlightedNodeIds(new Set(ids))}
+							hasGraph={graphEverExistedRef.current.has(selectedFile) && !(regeneratingFile === selectedFile && graphLoading)}
+						/>
 					)}
 				</S.SidePanel>
 			</S.ContentRow>

@@ -47,6 +47,13 @@ export const GraphStyle = [
         },
     },
     {
+        selector: "node.loading-background",
+        style: {
+            "border-width": "3px",
+            "border-color": "#15803d",
+        },
+    },
+    {
         selector: "edge",
         style: {
             width: 1,
@@ -138,6 +145,7 @@ export const GraphStyle = [
             "min-zoomed-font-size": 7,
             "line-color": theme.colors["accent-light"],
             "target-arrow-color": theme.colors["accent-light"],
+            "z-index": 15,
         },
     },
     {
@@ -150,6 +158,7 @@ export const GraphStyle = [
             "min-zoomed-font-size": 7,
             "line-color": "white",
             "target-arrow-color": "white",
+            "z-index": 15,
         },
     },
     {
@@ -181,6 +190,41 @@ export const GraphStyle = [
         style: {
             width: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
             height: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
+        },
+    },
+    {
+        selector: "node.chat-highlighted",
+        style: {
+            "border-width": "3px",
+            "border-color": "#2563eb",
+            "border-opacity": 1,
+        },
+    },
+    {
+        selector: "node.chat-highlighted.dimmed",
+        style: {
+            opacity: 0.7,
+        },
+    },
+    {
+        selector: "edge.chat-highlighted",
+        style: {
+            width: 2,
+            "line-color": "#2563eb",
+            "target-arrow-color": "#2563eb",
+            "z-index": 10,
+        },
+    },
+    {
+        selector: "edge.chat-highlighted.chat-front",
+        style: {
+            "z-index": 20,
+        },
+    },
+    {
+        selector: "edge.chat-highlighted.dimmed",
+        style: {
+            opacity: 0.7,
         },
     },
 ]

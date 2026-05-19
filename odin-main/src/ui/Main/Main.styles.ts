@@ -22,8 +22,8 @@ export const ContentRow = styled.div`
 `;
 
 export const SidePanel = styled.div`
-    width: 220px;
-    min-width: 180px;
+    width: 260px;
+    min-width: 200px;
     flex-shrink: 0;
     border-left: 1px solid var(--background-modifier-border);
     padding: var(--size-4-3);
@@ -31,6 +31,34 @@ export const SidePanel = styled.div`
     display: flex;
     flex-direction: column;
     gap: var(--size-4-2);
+`;
+
+export const SideTabBar = styled.div`
+    display: flex;
+    flex-direction: row;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-bottom: var(--size-4-2);
+    flex-shrink: 0;
+    gap: 0;
+`;
+
+export const SideTabButton = styled.button<{ $active: boolean }>`
+    && {
+        flex: 1;
+        padding: 4px 0;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid ${p => p.$active ? "var(--color-accent-1)" : "transparent"};
+        box-shadow: none;
+        cursor: pointer;
+        font-size: var(--font-ui-smaller);
+        color: ${p => p.$active ? "var(--color-accent-1)" : "var(--text-muted)"};
+        margin-bottom: -1px;
+        transition: color 0.15s;
+    }
+    &&:hover {
+        color: var(--text-normal);
+    }
 `;
 
 export const SummaryText = styled.p`
@@ -42,6 +70,7 @@ export const SummaryText = styled.p`
     padding: var(--size-4-2);
     border-radius: var(--radius-s);
     user-select: text;
+    -webkit-user-select: text;
     cursor: text;
 `;
 
@@ -291,5 +320,20 @@ export const GenerateKGButton = styled.button`
     &&:hover {
         background: var(--color-base-30);
         border-color: var(--color-accent-1);
+    }
+`;
+
+export const SummaryLoadingRow = styled.div`
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+`;
+
+export const SummaryStopButton = styled(StopButton)`
+    && {
+        padding: 1px 6px;
+        font-size: 10px;
     }
 `;

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import os
 from pathlib import Path
@@ -85,28 +85,44 @@ class GeneralQueryAgent:
 
 class NotesQueryAgent(GeneralQueryAgent):
 
-    def __init__(self: NotesQueryAgent, repo_path: str) -> None:
+    def __init__(self: NotesQueryAgent, repo_path: str, file_path: Optional[str] = None) -> None:
 
         self.searcher = Searcher(repo_path)
 
-        search_graph = Tool.from_function(
-            func=self.searcher.search_graph_tool,
-            name="search_graph",
-            description="""Useful for when you want to query the knowledge graph via the query embeddings. 
-            Returns descriptions of 3 most similar nodes."""
-        )
-
-        search_text = Tool.from_function(
-            func=self.searcher.search_text_tool,
-            name="search_text",
-            description="""Useful for when you want to query the document store via the query embeddings. 
-                Returns 3 most similar sentences to a given query."""
-        )
+        if file_path:
+            search_graph = Tool.from_function(
+                func=lambda q, fp=file_path: self.searcher.search_graph_for_file(q, fp),
+                name="search_graph",
+                description="Queries the knowledge graph scoped to the current note. Returns descriptions of 3 most similar nodes in this note."
+            )
+            search_text = Tool.from_function(
+                func=lambda q, fp=file_path: self.searcher.search_text_for_file(q, fp),
+                name="search_text",
+                description="Queries the document store scoped to the current note. Returns 3 most similar sentences from this note."
+            )
+        else:
+            search_graph = Tool.from_function(
+                func=self.searcher.search_graph_tool,
+                name="search_graph",
+                description="""Useful for when you want to query the knowledge graph via the query embeddings.
+                Returns descriptions of 3 most similar nodes."""
+            )
+            search_text = Tool.from_function(
+                func=self.searcher.search_text_tool,
+                name="search_text",
+                description="""Useful for when you want to query the document store via the query embeddings.
+                    Returns 3 most similar sentences to a given query."""
+            )
 
         notes_tools = [search_graph, search_text]
         super().__init__(repo_path, notes_tools)
 
         return
+
+    def ask_with_nodes(self: NotesQueryAgent, question: str) -> tuple[str, list[int]]:
+        self.searcher.accessed_node_ids = []
+        result = self.agent.run(question)
+        return result, list(set(self.searcher.accessed_node_ids))
 
 
 class CodeQueryAgent(GeneralQueryAgent):

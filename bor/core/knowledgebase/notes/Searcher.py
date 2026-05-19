@@ -13,6 +13,7 @@ class Searcher:
     def __init__(self: Searcher, repo_path: str) -> None:
         self.repo_path = repo_path
         self.mm = MemgraphManager()
+        self.accessed_node_ids: list[int] = []
         return
 
     def search_graph(self: Searcher, query_text: Optional[str] = None, query_embeddings: Optional[List[float]] = None) -> List[Any]:
@@ -34,7 +35,9 @@ class Searcher:
         results = self.search_graph(query_text=query)
         out = ""
         for res in results:
-            out += self.mm.describe_node(res['ID(node1)'])
+            node_id = res['ID(node1)']
+            self.accessed_node_ids.append(node_id)
+            out += self.mm.describe_node(node_id)
             out += "-------------\n"
         return out
 
@@ -49,6 +52,30 @@ class Searcher:
 
     def search_text_tool(self: Searcher, query: str) -> str:
         return '\n'.join(self.search_text(query_text=query))
+
+    def search_text_for_file(self, query: str, file_path: str) -> str:
+        cm = CollectionManager(self.repo_path)
+        try:
+            res = cm.collection.query(query_texts=query, n_results=3, where={"file_path": file_path})
+            docs = res['documents'][0]
+            if docs:
+                return '\n'.join(docs)
+        except Exception:
+            pass
+        return self.search_text_tool(query)
+
+    def search_graph_for_file(self, query: str, file_path: str) -> str:
+        results = self.search_graph(query_text=query)
+        filtered = [r for r in results if self.mm.get_node_file_path(r['ID(node1)']) == file_path]
+        if not filtered:
+            filtered = results
+        out = ""
+        for res in filtered[:3]:
+            node_id = res['ID(node1)']
+            self.accessed_node_ids.append(node_id)
+            out += self.mm.describe_node(node_id)
+            out += "-------------\n"
+        return out
 
     _STOP_WORDS = {"a", "an", "the", "of", "in", "at", "to", "for", "and", "or", "with", "by", "is", "are", "was", "were"}
 

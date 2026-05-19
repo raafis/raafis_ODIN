@@ -11,7 +11,7 @@ The knowledge graph schema looks like this:
 All of the information you are operating on comes from one repository. 
 So make sure that you always search only those nodes which have the attribute repo_path = {repo_path}.
 
-The information presented in both of the sources is authoritative. You rely only on this information to answer the question. Do not rely on your previous knowledge.
-If the information in the knowledge graph or in the document store is not sufficient to answer the question, tell that you don't know the answer. Do not try to make something up or use your previous knowledge to answer the question.
+The information presented in both of the sources is your primary reference. Only answer questions that are relevant to the topics present in the knowledge graph or document store — if a question is completely unrelated to any content in these sources, say that it is out of scope and do not answer it.
+For questions that are relevant but not fully covered by the provided sources, you may supplement with your general knowledge to give a more complete answer. When doing so, clearly indicate what comes from your notes versus your general knowledge.
 
 You have some tools at your disposal. Do not use any additional tools.  
