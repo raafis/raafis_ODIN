@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Graph from "../Graph/Graph";
 import PromptBar from "../PromptBar/PromptBar";
 import ChatPanel, { ChatEntry } from "../ChatPanel/ChatPanel";
@@ -48,6 +48,54 @@ const Main: React.FC = (): React.JSX.Element => {
 	};
 	const [chatError, setChatError] = useState("");
 	const [chatHighlightedNodeIds, setChatHighlightedNodeIds] = useState<Set<string>>(new Set());
+	const [activeChatNodes, setActiveChatNodes] = useState<
+		Array<{ name: string; nodeType: string; relatedTo: string; relationship: string }> | null
+	>(null);
+
+	const displayData = useMemo(() => {
+		if (!activeChatNodes?.length) return data;
+		const existingNames = new Set(data.nodes.map(n => n.data.fullLabel.toLowerCase()));
+		const wordSet = (s: string) => new Set(s.replace(/-/g, " ").split(/\s+/).filter(Boolean));
+		const isExistingName = (name: string): boolean => {
+			const nl = name.toLowerCase();
+			if (existingNames.has(nl)) return true;
+			const nw = wordSet(nl);
+			for (const ex of existingNames) {
+				const ew = wordSet(ex);
+				if (ew.size && nw.size && ([...ew].every(w => nw.has(w)) || [...nw].every(w => ew.has(w)))) return true;
+			}
+			return false;
+		};
+		const newNodes: Node[] = [];
+		const newEdges: Edge[] = [];
+		activeChatNodes.forEach((cn, i) => {
+			if (isExistingName(cn.name)) return;
+			const nodeId = `chat-active-${i}`;
+			newNodes.push({
+				data: { id: nodeId, label: cn.name.length > 15 ? cn.name.slice(0, 12) + "…" : cn.name,
+						fullLabel: cn.name, priority: 2, isChatNode: true },
+				classes: "chat-node",
+			});
+			const relatedNode = cn.relatedTo ? (
+				data.nodes.find(n => n.data.fullLabel.toLowerCase() === cn.relatedTo.toLowerCase()) ||
+				data.nodes.find(n =>
+					n.data.fullLabel.toLowerCase().includes(cn.relatedTo.toLowerCase()) ||
+					cn.relatedTo.toLowerCase().includes(n.data.fullLabel.toLowerCase())
+				)
+			) : undefined;
+			const sourceId = relatedNode?.data.id ??
+				(chatHighlightedNodeIds.size > 0 ? [...chatHighlightedNodeIds][0] : undefined);
+			if (sourceId) {
+				newEdges.push({ data: { id: `chat-active-edge-${i}`,
+					label: cn.relationship || "RELATED_TO",
+					fullLabel: cn.relationship || "RELATED_TO",
+					source: sourceId, target: nodeId },
+					classes: "chat-node-edge" });
+			}
+		});
+		if (newNodes.length === 0) return data;
+		return { nodes: [...data.nodes, ...newNodes], edges: [...data.edges, ...newEdges] };
+	}, [data, activeChatNodes, chatHighlightedNodeIds]);
 	const [chatLoadingMap, setChatLoadingMap] = useState<Map<string, boolean>>(new Map());
 	const chatLoading = chatLoadingMap.get(selectedFile) ?? false;
 	const setChatLoading: React.Dispatch<React.SetStateAction<boolean>> = (action) => {
@@ -80,6 +128,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			: "/";
 
 	const onNodeClickCallback = async (node: NodeSingular) => {
+		if (node.data().isChatNode) return;
 		const capturedFile = selectedFile;
 		const nodeId = node.data().id;
 
@@ -222,6 +271,12 @@ const Main: React.FC = (): React.JSX.Element => {
 		});
 	};
 
+	const handleActivateChatNodes = (
+		nodes: Array<{ name: string; nodeType: string; relatedTo: string; relationship: string }> | null
+	) => {
+		setActiveChatNodes(nodes);
+	};
+
 	const handleClearSummary = () => {
 		setSummary(null);
 		setSummaryLoading(false);
@@ -244,12 +299,12 @@ const Main: React.FC = (): React.JSX.Element => {
 	};
 
 	const handleGetSummary = () => {
-		if (!activeNodeId) return;
+		if (!activeNodeId || data.nodes.find(n => n.data.id === activeNodeId)?.data.isChatNode) return;
 		fetchAndCacheSummary(activeNodeId, selectedFile);
 	};
 
 	const handleRegenerateSummary = () => {
-		if (!activeNodeId) return;
+		if (!activeNodeId || data.nodes.find(n => n.data.id === activeNodeId)?.data.isChatNode) return;
 		const capturedFile = selectedFile;
 		const nodeId = activeNodeId;
 		const cacheKey = `${capturedFile}::${nodeId}`;
@@ -583,6 +638,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	useEffect(() => {
 		setChatError("");
 		setChatHighlightedNodeIds(new Set());
+		setActiveChatNodes(null);
 	}, [selectedFile]);
 
 	useEffect(() => {
@@ -742,7 +798,7 @@ const Main: React.FC = (): React.JSX.Element => {
 							<S.GenerationPercent>{generationProgress.percent}%</S.GenerationPercent>
 						)}
 						{graphLoading && (
-							<S.StopButton onClick={handleStop}>Stop</S.StopButton>
+							<S.StopButton onClick={handleStop}>Cancel</S.StopButton>
 						)}
 					</S.GenerationRow>
 					<S.GenerationProgressBar $percent={generationProgress?.percent ?? 0} />
@@ -756,7 +812,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			<S.ContentRow>
 				<S.GraphWrapper>
 					<Graph
-						data={data}
+						data={displayData}
 						activeNodeId={activeNodeId}
 						onActiveNodeIdChange={handleActiveNodeIdChange}
 						cachedNodeIds={cachedNodeIds}
@@ -768,6 +824,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						setSummary(null);
 						setSummaryLoading(false);
 						setChatHighlightedNodeIds(new Set());
+						setActiveChatNodes(null);
 						clearHighlight();
 					}}
 						visible={!(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading)}
@@ -800,7 +857,6 @@ const Main: React.FC = (): React.JSX.Element => {
 							{regeneratingFile !== selectedFile && !summaryLoading && summary && <S.SummaryText>{summary}</S.SummaryText>}
 							{regeneratingFile !== selectedFile && !summaryLoading && summary && (
 								<S.ButtonRow>
-									{copied && <S.CopiedToast>copied to clipboard</S.CopiedToast>}
 									<S.CopyButton onClick={handleCopySummary}>
 										{copied ? <S.CheckIcon /> : <S.CopyIcon />}
 									</S.CopyButton>
@@ -833,6 +889,8 @@ const Main: React.FC = (): React.JSX.Element => {
 							loading={chatLoading}
 							setLoading={setChatLoading}
 							onHighlightNodes={(ids) => setChatHighlightedNodeIds(new Set(ids))}
+							activeChatNodes={activeChatNodes}
+							onActivateChatNodes={handleActivateChatNodes}
 							hasGraph={graphEverExistedRef.current.has(selectedFile) && !(regeneratingFile === selectedFile && graphLoading)}
 						/>
 					)}

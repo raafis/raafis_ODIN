@@ -54,6 +54,16 @@ export const GraphStyle = [
         },
     },
     {
+        selector: "node.chat-node",
+        style: {
+            "background-color": "#fb923c",
+            "border-width": "2px",
+            "border-color": "#ea580c",
+            width: "20px",
+            height: "20px",
+        },
+    },
+    {
         selector: "edge",
         style: {
             width: 1,
@@ -72,6 +82,15 @@ export const GraphStyle = [
             "text-max-width": "80px",
             "text-outline-color": theme.colors.primary,
             "text-outline-width": "2px",
+        },
+    },
+    {
+        selector: "edge.chat-node-edge",
+        style: {
+            "line-color": "#fb923c",
+            "target-arrow-color": "#fb923c",
+            width: 2,
+            "z-index": 5,
         },
     },
     {
@@ -103,6 +122,13 @@ export const GraphStyle = [
             height: (node: cytoscape.NodeSingular) => (node.data("priority") * 10 + 13) + "px",
             "border-width": "3px",
             "border-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "node.chat-node.hovered",
+        style: {
+            width: "23px",
+            height: "23px",
         },
     },
     {
@@ -195,6 +221,7 @@ export const GraphStyle = [
     {
         selector: "node.chat-highlighted",
         style: {
+            "background-color": "#3b82f6",
             "border-width": "3px",
             "border-color": "#2563eb",
             "border-opacity": 1,
@@ -225,6 +252,69 @@ export const GraphStyle = [
         selector: "edge.chat-highlighted.dimmed",
         style: {
             opacity: 0.7,
+        },
+    },
+    {
+        selector: "node.chat-highlighted.hovered",
+        style: {
+            "border-width": "3px",
+            "border-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "node.chat-highlighted.hover-neighbor-outgoing, node.chat-highlighted.active-neighbor-outgoing",
+        style: {
+            "border-width": "3px",
+            "border-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "node.chat-highlighted.hover-neighbor-incoming, node.chat-highlighted.active-neighbor-incoming",
+        style: {
+            "border-width": "3px",
+            "border-color": "white",
+        },
+    },
+    {
+        selector: "edge.chat-highlighted.hovered",
+        style: {
+            width: 3,
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
+        },
+    },
+    {
+        selector: "edge.chat-highlighted.hovered-incoming",
+        style: {
+            width: 3,
+            "line-color": "white",
+            "target-arrow-color": "white",
+        },
+    },
+    {
+        selector: "edge.chat-highlighted.edge-active",
+        style: {
+            width: 3,
+            label: "data(fullLabel)",
+            "font-size": "10px",
+            "text-max-width": "150px",
+            "min-zoomed-font-size": 7,
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
+            "z-index": 15,
+        },
+    },
+    {
+        selector: "edge.chat-highlighted.edge-active-incoming",
+        style: {
+            width: 3,
+            label: "data(fullLabel)",
+            "font-size": "10px",
+            "text-max-width": "150px",
+            "min-zoomed-font-size": 7,
+            "line-color": "white",
+            "target-arrow-color": "white",
+            "z-index": 15,
         },
     },
 ]

@@ -49,6 +49,13 @@ class TextAnalizer:
             think=False,
             num_predict=3072,
         )
+        self.entity_model = ChatOllama(
+            model=constants.LLM_MODEL_NAME,
+            base_url=constants.OLLAMA_BASE_URL,
+            temperature=0.1,
+            think=False,
+            num_predict=512,
+        )
 
         self.prompt_names = [
             'prompt_generate', 'system_message_generate',
@@ -170,6 +177,34 @@ class TextAnalizer:
         "1. Only output entities NOT already in the existing graph.\n"
         "2. Node Name MUST be a short noun phrase, 1–5 words, Title Case. NEVER a full sentence.\n"
         "3. No markdown, no explanations, no blank lines — only NODE and REL lines.\n"
+    )
+
+    _CHAT_ENTITY_SYSTEM = (
+        "You are a knowledge graph UPDATER. Given a list of existing entities and a new text passage, "
+        "extract NEW entities from the passage and connect them to the existing entities.\n\n"
+        "Output ONLY lines in these two formats — nothing else:\n"
+        "  NODE|Label|Name\n"
+        "  REL|Name|RELATIONSHIP_TYPE|ExistingName\n\n"
+        "REQUIRED FORMAT: output each NODE line IMMEDIATELY followed by its REL line. "
+        "Use EXACTLY the entity names from the 'Existing entities' list in REL lines. Example:\n"
+        "  NODE|Label|NewEntityName\n"
+        "  REL|NewEntityName|RELATIONSHIP_TYPE|ExistingEntityName\n"
+        "  NODE|Label|AnotherNewEntity\n"
+        "  REL|AnotherNewEntity|RELATIONSHIP_TYPE|ExistingEntityName\n\n"
+        "LABELS — Technology, Person, Organisation, Location, Event, Concept, Output, Entity.\n"
+        "RELATIONSHIP_TYPE — a verb or verb phrase whose words appear in the passage, in UPPER_SNAKE_CASE.\n"
+        "  WRONG (generic, not in text): RELATED_TO, ASSOCIATED_WITH, IS_ALTERNATIVE_TO\n"
+        "  RIGHT (grounded in text): use the actual verb from the response passage.\n"
+        "  Ask yourself: 'Do these words appear in the passage?' If not, find a phrase that does.\n"
+        "  Classification exceptions (allowed even when exact words not in text):\n"
+        "    'X is a Y' → IS_A  |  'X is a type of Y' → IS_TYPE_OF\n"
+        "    'such as X' / 'including X' / listed examples → EXEMPLIFIES or IS_INCLUDED_IN\n\n"
+        "RULES:\n"
+        "1. Skip entities already in the existing list (any name variation).\n"
+        "2. Node Name: 1–5 words, Title Case. NEVER a full sentence.\n"
+        "3. Every NODE MUST be immediately followed by one REL line to an EXISTING entity.\n"
+        "4. No markdown, no explanations, no blank lines.\n"
+        "5. If no new entities exist, output nothing.\n"
     )
 
     @staticmethod
@@ -451,6 +486,20 @@ class TextAnalizer:
             ))
         ]
         return self._invoke_with_retry(repo_path, file_path, text)
+
+    def extract_chat_entities(self, existing_entities: str, chat_response: str) -> str:
+        """Extract new entities from chat_response and connect them to existing_entities."""
+        messages = [
+            SystemMessage(content=self._CHAT_ENTITY_SYSTEM),
+            HumanMessage(content=(
+                f"Existing entities:\n{existing_entities}\n\n"
+                f"New passage:\n{chat_response}"
+            ))
+        ]
+        try:
+            return self.entity_model.invoke(messages).content
+        except Exception:
+            return ""
 
     @staticmethod
     def _names_from_cypher(cypher: str) -> list:

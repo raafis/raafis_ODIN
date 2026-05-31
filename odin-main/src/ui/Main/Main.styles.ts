@@ -143,7 +143,7 @@ export const TrashButton = styled.button`
         border-radius: var(--radius-s);
         border: none;
         background: transparent;
-        color: var(--text-error, #e05252);
+        color: var(--text-muted);
         cursor: pointer;
         box-shadow: none;
         display: flex;
@@ -151,7 +151,8 @@ export const TrashButton = styled.button`
         justify-content: center;
     }
     &&:hover {
-        background: rgba(224, 82, 82, 0.15);
+        background: rgba(255, 255, 255, 0.15);
+        color: var(--text-normal);
     }
 `;
 
@@ -164,7 +165,7 @@ export const ButtonRow = styled.div`
     display: flex;
     flex-direction: row;
     gap: var(--size-4-1);
-    align-self: flex-end;
+    align-self: flex-start;
 `;
 
 export const LoadingIcon = styled(Loader2)`

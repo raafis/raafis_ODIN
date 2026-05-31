@@ -54,11 +54,20 @@ class Question(BaseModel):
     type: Union[Type, None] = None
     file_path: Union[str, None] = None
     note_content: Union[str, None] = None
+    chat_context: list[str] = []
+
+
+class ChatNode(BaseModel):
+    name: str
+    node_type: str = "Concept"
+    related_to: str = ""
+    relationship: str = "RELATED_TO"
 
 
 class Answer(BaseModel):
     content: str
     node_ids: list[int] = []
+    chat_nodes: list[ChatNode] = []
 
 
 class Node(BaseModel):
@@ -135,6 +144,73 @@ def _build_kg_summary(file_path: str) -> tuple[str, dict[int, str]]:
         return "", {}
 
 
+def _words(s: str) -> set:
+    return set(s.replace("-", " ").replace("_", " ").lower().split())
+
+
+def _is_existing(name_lower: str, existing_lower: dict) -> bool:
+    if name_lower in existing_lower:
+        return True
+    nw = _words(name_lower)
+    if not nw:
+        return False
+    for ex in existing_lower:
+        ew = _words(ex)
+        if ew and (ew.issubset(nw) or nw.issubset(ew)):
+            return True
+    return False
+
+
+def _find_existing(name_lower: str, existing_lower: dict):
+    """Return canonical name from existing_lower via word-subset fuzzy match, or None."""
+    if name_lower in existing_lower:
+        return existing_lower[name_lower]
+    nw = _words(name_lower)
+    if not nw:
+        return None
+    for ex_l, ex_orig in existing_lower.items():
+        ew = _words(ex_l)
+        if ew and (ew.issubset(nw) or nw.issubset(ew)):
+            return ex_orig
+    return None
+
+
+def _parse_chat_nodes(raw: str, node_map: dict, chat_context: list = None) -> list:
+    existing_lower = {name.lower(): name for name in node_map.values()}
+    for name in (chat_context or []):
+        if name:
+            existing_lower[name.lower()] = name
+    declared: dict = {}
+    relationships: dict = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("NODE|"):
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                label, name = parts[1].strip(), parts[2].strip()
+                if name and not _is_existing(name.lower(), existing_lower):
+                    declared[name.lower()] = (name, label)
+        elif line.startswith("REL|"):
+            parts = line.split("|", 3)
+            if len(parts) == 4:
+                from_n, rel, to_n = parts[1].strip(), parts[2].strip(), parts[3].strip()
+                fl, tl = from_n.lower(), to_n.lower()
+                existing_to = _find_existing(tl, existing_lower)
+                existing_fr = _find_existing(fl, existing_lower)
+                if fl in declared and existing_to and fl not in relationships:
+                    relationships[fl] = (existing_to, rel)
+                elif tl in declared and existing_fr and tl not in relationships:
+                    relationships[tl] = (existing_fr, rel)
+    return [
+        ChatNode(
+            name=orig, node_type=label,
+            related_to=relationships.get(nl, ("", ""))[0],
+            relationship=relationships.get(nl, ("", "RELATED_TO"))[1],
+        )
+        for nl, (orig, label) in declared.items()
+    ]
+
+
 @app.post("/knowledge_base/general/ask")
 def ask_repo(question: Question) -> Answer:
     try:
@@ -165,6 +241,27 @@ def ask_repo(question: Question) -> Answer:
             result = llm.invoke(prompt).content
             result_lower = result.lower()
             node_ids = [nid for nid, name in node_map.items() if name.lower() in result_lower]
+            chat_nodes: list[ChatNode] = []
+            if node_map and kg_summary:
+                ctx_str = ("\nPreviously mentioned: " + ", ".join(question.chat_context)) if question.chat_context else ""
+                raw_entities = ta.extract_chat_entities(kg_summary + ctx_str, result)
+                chat_nodes = _parse_chat_nodes(raw_entities, node_map, question.chat_context)
+                if node_ids and chat_nodes:
+                    mentioned = {nid: node_map[nid] for nid in node_ids if nid in node_map}
+                    if mentioned:
+                        for cn in chat_nodes:
+                            if not cn.related_to:
+                                cn_words = _words(cn.name.lower())
+                                best, best_score = None, -1
+                                for nname in mentioned.values():
+                                    score = len(cn_words & _words(nname.lower()))
+                                    if score > best_score:
+                                        best_score, best = score, nname
+                                cn.related_to = best or next(iter(mentioned.values()))
+                                cn.relationship = "RELATED_TO"
+            if not result or not result.strip():
+                return Answer(content="I could not generate a response. Make sure the knowledge graph has been generated for this vault and that Ollama is running.")
+            return Answer(content=result, node_ids=node_ids, chat_nodes=chat_nodes)
         elif question.type == Type.NOTES:
             na = NotesQueryAgent(question.repo.path, file_path=question.file_path)
             result, node_ids = na.ask_with_nodes(question.prompt)

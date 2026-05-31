@@ -6,7 +6,9 @@ export interface Node {
         priority: number;
         selected?: boolean;
         path?: string;
+        isChatNode?: boolean;
     };
+    classes?: string;
 }
 
 export interface Edge {
@@ -17,4 +19,5 @@ export interface Edge {
         source: string;
         target: string;
     };
+    classes?: string;
 }

@@ -219,9 +219,15 @@ const Graph: React.FC<GraphProps> = ({
 
 				cyRef.current.elements().remove();
 				cyRef.current.add([...data.nodes, ...data.edges]);
+				cyRef.current.edges().forEach(edge => {
+					if (edge.target().data('isChatNode')) edge.addClass('chat-node-edge');
+				});
 
-				if (cached && data.nodes.length > 0) {
-					cyRef.current.layout({ name: "preset", positions: cached, fit: true, padding: 30 }).run();
+				const hasAllPositions = !!cached && data.nodes.every(
+					n => !!(cached as Record<string, {x:number;y:number}>)[n.data.id]
+				);
+				if (hasAllPositions) {
+					cyRef.current.layout({ name: "preset", positions: cached!, fit: true, padding: 30 }).run();
 				} else {
 					cyRef.current.layout(LAYOUT_OPTIONS).run();
 					if (data.nodes.length > 0) {
