@@ -317,4 +317,19 @@ export const GraphStyle = [
             "z-index": 15,
         },
     },
+    {
+        selector: 'node[id^="preview_"]',
+        style: {
+            opacity: 0.45,
+        },
+    },
+    {
+        selector: 'edge[id^="preview_e_"]',
+        style: {
+            "line-color": "#646464",
+            "target-arrow-color": "#646464",
+            "color": "#838383",
+            "text-outline-color": "#1E1E1E",
+        },
+    },
 ]

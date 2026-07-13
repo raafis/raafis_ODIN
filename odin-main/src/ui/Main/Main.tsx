@@ -129,6 +129,7 @@ const Main: React.FC = (): React.JSX.Element => {
 
 	const onNodeClickCallback = async (node: NodeSingular) => {
 		if (node.data().isChatNode) return;
+		if (node.data().id?.startsWith('preview_')) return;
 		const capturedFile = selectedFile;
 		const nodeId = node.data().id;
 
@@ -326,6 +327,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	};
 
 	const onEdgeClickCallback = async (edge: EdgeSingular) => {
+		if (edge.source().data().id?.startsWith('preview_')) return;
 		if (disabled) return;
 		let ignoreResults = false;
 		{
@@ -481,6 +483,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						setSummaryLoading(false);
 						setActiveNodeId(undefined);
 						activeNodePerFileRef.current.delete(filePath);
+						setData({ nodes: [], edges: [] });
 					}
 					new Notice("Generating knowledge graph…");
 					await fetchData(
@@ -671,6 +674,7 @@ const Main: React.FC = (): React.JSX.Element => {
 
 		const fileOpenRef = app?.workspace.on("file-open", (file) => {
 			const path = file?.path || "";
+			selectedFileRef.current = path;
 			if (pendingReloadRef.current.has(path)) {
 				pendingReloadRef.current.delete(path);
 				setSelectedFile("");
@@ -741,12 +745,19 @@ const Main: React.FC = (): React.JSX.Element => {
 		const contentPollInterval = setInterval(() => {
 			const currentPath = selectedFileRef.current;
 			if (!currentPath || graphEverExistedRef.current.has(currentPath)) return;
-			const editor = app?.workspace.activeEditor?.editor;
-			if (!editor) return;
-			const activeFilePath = (app?.workspace.activeEditor as any)?.file?.path;
-			if (activeFilePath !== undefined && activeFilePath !== currentPath) return;
-			const content = editor.getValue();
-			const lines = content.split("\n");
+			let content: string | null = null;
+			app?.workspace.iterateAllLeaves((leaf: any) => {
+				if (content !== null) return;
+				if (
+					leaf.view?.getViewType?.() === "markdown" &&
+					leaf.view?.file?.path === currentPath &&
+					leaf.view?.editor
+				) {
+					content = leaf.view.editor.getValue();
+				}
+			});
+			if (content === null) return;
+			const lines = (content as string).split("\n");
 			let start = 0;
 			if (lines[0]?.trim() === "---") {
 				const end = lines.findIndex((l: string, i: number) => i > 0 && l.trim() === "---");
@@ -781,6 +792,34 @@ const Main: React.FC = (): React.JSX.Element => {
 						if (prev && result.percent < prev.percent) return prev;
 						return { current: result.current, total: result.total, percent: result.percent };
 					});
+					const previewNodes: Array<{name: string, label: string}> = result.preview_nodes || [];
+					const previewEdges: Array<{from: string, rel: string, to: string}> = result.preview_edges || [];
+					if (previewNodes.length > 0 && regeneratingFile === selectedFileRef.current) {
+						const previewNodeIds = new Set(previewNodes.map(n => `preview_${n.name}`));
+						setData({
+							nodes: previewNodes.map(n => ({
+								data: {
+									id: `preview_${n.name}`,
+									label: n.name.length > 20 ? n.name.slice(0, 17) + '…' : n.name,
+									fullLabel: n.name,
+									priority: 1,
+									selected: false,
+									path: regeneratingFile,
+								}
+							})),
+							edges: previewEdges
+								.filter(e => previewNodeIds.has(`preview_${e.from}`) && previewNodeIds.has(`preview_${e.to}`))
+								.map(e => ({
+									data: {
+										id: `preview_e_${e.from}_${e.rel}_${e.to}`,
+										label: e.rel.length > 20 ? e.rel.slice(0, 17) + '…' : e.rel,
+										fullLabel: e.rel,
+										source: `preview_${e.from}`,
+										target: `preview_${e.to}`,
+									}
+								})),
+						});
+					}
 				}
 			} catch { /* ignore */ }
 		}, 2000);
@@ -827,7 +866,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						setActiveChatNodes(null);
 						clearHighlight();
 					}}
-						visible={!(regeneratingFile !== null && regeneratingFile === selectedFile && graphLoading)}
+						visible={true}
 						disabled={disabled}
 						filePath={selectedFile}
 					/>

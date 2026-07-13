@@ -226,8 +226,12 @@ const Graph: React.FC<GraphProps> = ({
 				const hasAllPositions = !!cached && data.nodes.every(
 					n => !!(cached as Record<string, {x:number;y:number}>)[n.data.id]
 				);
+				const isPreviewOnly = data.nodes.length > 0 &&
+					data.nodes.every(n => (n.data.id as string)?.startsWith('preview_'));
 				if (hasAllPositions) {
 					cyRef.current.layout({ name: "preset", positions: cached!, fit: true, padding: 30 }).run();
+				} else if (isPreviewOnly) {
+					cyRef.current.layout({ ...LAYOUT_OPTIONS, tile: false, numIter: 2000 } as typeof LAYOUT_OPTIONS).run();
 				} else {
 					cyRef.current.layout(LAYOUT_OPTIONS).run();
 					if (data.nodes.length > 0) {

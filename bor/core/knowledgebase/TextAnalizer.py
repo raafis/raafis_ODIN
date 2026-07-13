@@ -409,15 +409,75 @@ class TextAnalizer:
         "REL|FromName|RELATIONSHIP_TYPE|ToName"
     )
 
-    def _stream_raw(self: TextAnalizer, file_path: str) -> str:
+    def _stream_raw(self: TextAnalizer, file_path: str, on_partial_node=None, repo_path: str = None, node_file_path: str = None) -> str:
+        import re as _re
         raw = ""
-        # Resume from current value so retries don't reset the counter backwards.
+        line_buf = ""
         token_count = _generation_progress.get(file_path, {}).get("chunk_tokens", 0)
+        _PREVIEW_LABELS = {"Person", "Organisation", "Location", "Event", "Concept", "Technology", "Output", "Entity"}
+
+        def _safe(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("'", "\\'")
+
+        def _norm(name: str) -> str:
+            name = name.strip()
+            name = _re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
+            name = _re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', name)
+            name = _re.sub(r'(?<=[a-zA-Z])(?=[0-9])', ' ', name)
+            name = _re.sub(r'(?<=[0-9])(?=[a-zA-Z])', ' ', name)
+            name = name.replace("_", " ").replace("-", " ").replace("/", " ")
+            name = _re.sub(r'\s*\([^)]*\)', '', name).strip()
+            name = _re.sub(r'\s+', ' ', name)
+            return name.title()
+
+        def _valid(name: str) -> bool:
+            if not name or len(name) < 3:
+                return False
+            if '=' in name or ',' in name:
+                return False
+            if _re.match(r'^[A-Za-z]\s*\d+$', name):
+                return False
+            return True
+
         for token in self.kg_model.stream(self.messages):
-            raw += token.content
+            content = token.content
+            raw += content
             token_count += 1
             if file_path in _generation_progress:
                 _generation_progress[file_path]["chunk_tokens"] = token_count
+            if on_partial_node and repo_path and node_file_path:
+                line_buf += content
+                while "\n" in line_buf:
+                    line, line_buf = line_buf.split("\n", 1)
+                    line = line.strip()
+                    if line.startswith("NODE|"):
+                        parts = line.split("|", 3)
+                        if len(parts) >= 3:
+                            label = parts[1].strip()
+                            name = _norm(parts[2])
+                            if _valid(name):
+                                label = label if label in _PREVIEW_LABELS else "Entity"
+                                if file_path in _generation_progress:
+                                    pnodes = _generation_progress[file_path].setdefault("preview_nodes", [])
+                                    if not any(n["name"] == name for n in pnodes):
+                                        pnodes.append({"name": name, "label": label})
+                                stmt = (
+                                    f"MERGE (n {{name: '{_safe(name)}', "
+                                    f"repo_path: '{_safe(repo_path)}', "
+                                    f"file_path: '{_safe(node_file_path)}'}}) "
+                                    f"SET n:{label} SET n.source_sentences = []"
+                                )
+                                on_partial_node(stmt)
+                    elif line.startswith("REL|"):
+                        parts = line.split("|", 4)
+                        if len(parts) >= 4:
+                            from_name = _norm(parts[1])
+                            rel_type = parts[2].strip()
+                            to_name = _norm(parts[3])
+                            if _valid(from_name) and _valid(to_name) and file_path in _generation_progress:
+                                pedges = _generation_progress[file_path].setdefault("preview_edges", [])
+                                if not any(e["from"] == from_name and e["rel"] == rel_type and e["to"] == to_name for e in pedges):
+                                    pedges.append({"from": from_name, "rel": rel_type, "to": to_name})
         self._last_raw = raw
         return raw
 
@@ -434,8 +494,8 @@ class TextAnalizer:
             "Your first line must start with 'CONTEXT:'. Extract comprehensively — do not stop early."
         ))
 
-    def _invoke_with_retry(self: TextAnalizer, repo_path: str, file_path: str, text: str = "", seed_names: set | None = None) -> str:
-        raw = self._stream_raw(file_path)
+    def _invoke_with_retry(self: TextAnalizer, repo_path: str, file_path: str, text: str = "", seed_names: set | None = None, on_partial_node=None) -> str:
+        raw = self._stream_raw(file_path, on_partial_node=on_partial_node, repo_path=repo_path, node_file_path=file_path)
         print(f"KG raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
         result = self._parse_kg_output(raw, repo_path, file_path, seed_names, text=text)
         if not result:
@@ -467,14 +527,14 @@ class TextAnalizer:
             chunks.append("\n\n".join(current))
         return chunks or [text]
 
-    def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
+    def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str, on_partial_node=None) -> str:
         if not text.strip():
             return ""
         self.messages = [
             SystemMessage(content=self._KG_SYSTEM),
             self._passage_human_message(text),
         ]
-        return self._invoke_with_retry(repo_path, file_path, text)
+        return self._invoke_with_retry(repo_path, file_path, text, on_partial_node=on_partial_node)
 
     def data_and_text_to_cypher_update(self: TextAnalizer, data: str, text: str, repo_path: str, file_path: str) -> str:
         self.messages = [
@@ -686,7 +746,7 @@ class TextAnalizer:
 
         return "\n".join(match_lines)
 
-    def text_to_cypher_chunked(self: TextAnalizer, text: str, repo_path: str, file_path: str) -> str:
+    def text_to_cypher_chunked(self: TextAnalizer, text: str, repo_path: str, file_path: str, on_chunk=None) -> str:
         chunks = self._split_into_chunks(text)
         total = len(chunks)
         my_gen_id = uuid.uuid4().hex
@@ -695,9 +755,13 @@ class TextAnalizer:
 
         try:
             if total == 1:
-                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path)
+                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path, on_partial_node=on_chunk)
+                if on_chunk and accumulated.strip():
+                    on_chunk(accumulated)
             else:
-                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path)
+                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path, on_partial_node=on_chunk)
+                if on_chunk and accumulated.strip():
+                    on_chunk(accumulated)
                 context_history = [self._extract_context_line(self._last_raw)]
                 context_history = [c for c in context_history if c]
                 _generation_progress[file_path]["current"] = 1
@@ -727,12 +791,14 @@ class TextAnalizer:
                             "Your first line must start with 'CONTEXT:'. Extract comprehensively — do not stop early."
                         ))
                     ]
-                    update = self._invoke_with_retry(repo_path, file_path, chunk, seed_names=set(existing_names))
+                    update = self._invoke_with_retry(repo_path, file_path, chunk, seed_names=set(existing_names), on_partial_node=on_chunk)
                     ctx = self._extract_context_line(self._last_raw)
                     if ctx:
                         context_history.append(ctx)
                     if update.strip():
                         accumulated = accumulated + "\n" + update
+                        if on_chunk:
+                            on_chunk(update)
                     _generation_progress[file_path]["current"] = i
                     _generation_progress[file_path]["chunk_tokens"] = 0
 
@@ -749,6 +815,8 @@ class TextAnalizer:
                     orphan_result = self._connect_orphans(text, accumulated, batch, repo_path, file_path, ctx_lines)
                     if orphan_result.strip():
                         accumulated = accumulated + "\n" + orphan_result
+                        if on_chunk:
+                            on_chunk(orphan_result)
 
             return accumulated
         finally:

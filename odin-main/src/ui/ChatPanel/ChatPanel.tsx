@@ -324,7 +324,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ root, filePath, messages, setMess
             <S.ChatInputRow>
                 <S.ChatClearButton
                     onClick={messages.length > 0 ? handleClear : undefined}
-                    title="Clear conversation"
+                    title="Restart conversation"
                     $disabled={messages.length === 0}
                 >
                     <S.ChatClearIcon />

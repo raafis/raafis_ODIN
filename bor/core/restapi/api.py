@@ -362,13 +362,16 @@ def update_file(file: File) -> None:
                     print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
     else:
         ta = TextAnalizer()
-        res_queries = ta.text_to_cypher_chunked(content, repo_path, file.path)
-        if res_queries.strip():
-            mm.delete_graph_for_file(file.path)
-            cm.delete_file(file.path)
-            mm.run_update_query(res_queries)
-        else:
-            print(f"WARN: KG extraction returned nothing for {file.path} — keeping existing graph")
+        mm.delete_graph_for_file(file.path)
+        cm.delete_file(file.path)
+        def _execute_chunk(cypher: str) -> None:
+            try:
+                mm.run_update_query(cypher)
+            except Exception as e:
+                print(f"WARN incremental KG write: {e}")
+        res_queries = ta.text_to_cypher_chunked(content, repo_path, file.path, on_chunk=_execute_chunk)
+        if not res_queries.strip():
+            print(f"WARN: KG extraction returned nothing for {file.path}")
 
     try:
         mm.db.execute("MATCH (n) WHERE n.file_path IS NULL DETACH DELETE n")
@@ -401,7 +404,9 @@ def generation_progress(path: str):
     token_fraction = min(chunk_tokens / 1024, 0.95) if total > 0 else 0
     raw = (current + token_fraction) / total if total else 0
     percent = min(round(raw * 100), 99)  # cap at 99 until actually done
-    return {"status": "generating", "percent": percent}
+    preview_nodes = progress.get("preview_nodes", [])
+    preview_edges = progress.get("preview_edges", [])
+    return {"status": "generating", "percent": percent, "preview_nodes": preview_nodes, "preview_edges": preview_edges}
 
 
 @app.post("/knowledge_base/notes/cancel_generation")
@@ -431,8 +436,12 @@ def add_file(file: File) -> None:
                 print(f"WARN kg bridge: {e}\nSTMT: {stmt[:200]}")
     else:
         ta = TextAnalizer()
-        res_queries = ta.text_to_cypher_chunked(content, repo_path, file.path)
-        mm.run_update_query(res_queries)
+        def _execute_chunk(cypher: str) -> None:
+            try:
+                mm.run_update_query(cypher)
+            except Exception as e:
+                print(f"WARN incremental KG write: {e}")
+        ta.text_to_cypher_chunked(content, repo_path, file.path, on_chunk=_execute_chunk)
 
     try:
         mm.db.execute("MATCH (n) WHERE n.file_path IS NULL DETACH DELETE n")

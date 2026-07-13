@@ -1,5 +1,5 @@
 import styled from "styled-components";
-import { Check, Copy, Loader2, MoveRight, PenLine, RotateCcw, Share2, Trash2, User2, X } from "lucide-react";
+import { Check, Copy, Loader2, MoveRight, PenLine, RefreshCw, RotateCcw, Share2, User2, X } from "lucide-react";
 import { AnimatedRotate } from "src/shared/animations";
 
 export const ChatContainer = styled.div`
@@ -226,7 +226,7 @@ export const ChatClearButton = styled.button<{ $disabled?: boolean }>`
     }
 `;
 
-export const ChatClearIcon = styled(Trash2)`
+export const ChatClearIcon = styled(RefreshCw)`
     width: 14px;
     height: 14px;
 `;
