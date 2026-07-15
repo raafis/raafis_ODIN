@@ -338,3 +338,34 @@ export const SummaryStopButton = styled(StopButton)`
         font-size: 10px;
     }
 `;
+
+export const ClusterPanelTitle = styled.p`
+    margin: 0;
+    font-size: var(--font-ui-small);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+    line-height: 1.4;
+`;
+
+export const ClusterPanelMeta = styled.p`
+    margin: 0;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+`;
+
+export const ExpandClusterButton = styled.button`
+    && {
+        padding: 4px 10px;
+        border-radius: var(--radius-s);
+        border: 1px solid var(--color-accent-1);
+        background: transparent;
+        color: var(--color-accent-1);
+        font-size: var(--font-ui-smaller);
+        cursor: pointer;
+        box-shadow: none;
+        align-self: center;
+    }
+    &&:hover {
+        background: rgba(var(--color-accent-1-rgb, 100, 130, 230), 0.15);
+    }
+`;

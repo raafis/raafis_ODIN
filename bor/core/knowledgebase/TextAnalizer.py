@@ -102,6 +102,9 @@ class TextAnalizer:
         "  Concept = abstract idea, phenomenon, or property (Privacy, Democracy, Encryption, Trust)\n"
         "  Technology = software, platform, tool, or system (Discord, Signal, Python, iPhone)\n"
         "  Output = artifact produced (Report, Document, Law, Policy)\n"
+        "  Date = specific calendar date, year, or time period (60 BC, 12 July 100 BC, 44 BC, 27 BC–AD 14)\n"
+        "  Quantity = numeric value, measurement, count, percentage, or statistic with its unit or context\n"
+        "             (300 Troops, 3 Percent Growth, 98.6 Degrees, 15 Million Denarii)\n"
         "  Entity = anything else that does not fit the above\n\n"
         "RELATIONSHIP_TYPE — a verb or verb phrase whose words appear in the passage, in UPPER_SNAKE_CASE.\n"
         "  WRONG (generic, invented, not in text): PROVIDED_BY, RELATED_TO, ASSOCIATED_WITH, USED_BY, HAS, AFFECTS\n"
@@ -154,7 +157,18 @@ class TextAnalizer:
         "   Use the canonical (longest, most formal) name as the NODE Name.\n"
         "10. Self-review: after writing all NODE and REL lines, scan your NODE list. For any NODE that\n"
         "    has no REL line yet, re-read the passage for a text-grounded connection to another extracted entity.\n"
-        "    If you find one, add the missing REL. Only skip if the passage truly has no explicit connection for that node.\n\n"
+        "    If you find one, add the missing REL. Only skip if the passage truly has no explicit connection for that node.\n"
+        "11. DATES: When the passage contains specific dates, years, or time periods, extract them as Date nodes.\n"
+        "    Use the exact form from the passage: '60 BC' → NODE|Date|60 BC\n"
+        "    '12 July 100 BC' → NODE|Date|12 July 100 BC  |  '27 BC–AD 14' → NODE|Date|27 BC Ad 14\n"
+        "    Then connect the Date node to the entity or event it describes using a grounded REL.\n"
+        "    (e.g. REL|Julius Caesar|BORN_IN|100 BC  or  REL|Gallic Wars|BEGAN_IN|58 BC)\n"
+        "    Do NOT extract vague time references without a specific value ('ancient times', 'long ago').\n"
+        "12. NUMBERS AND QUANTITIES: When the passage contains specific numeric values, measurements,\n"
+        "    statistics, counts, or percentages that are meaningful to the subject, extract them as Quantity nodes.\n"
+        "    Always include the unit or contextual word(s) — never a bare number alone:\n"
+        "    '300 soldiers' → NODE|Quantity|300 Soldiers  |  '3 percent' → NODE|Quantity|3 Percent\n"
+        "    Then connect the Quantity node to the entity it describes using a grounded REL.\n\n"
         "EXAMPLE (format only — these placeholder names must NOT appear in your output):\n"
         "NODE|Person|Formal Full Name\n"
         "ALIAS|Formal Full Name|Short Name\n"
@@ -171,7 +185,7 @@ class TextAnalizer:
         "Output ONLY lines in these two formats — nothing else:\n"
         "  NODE|Label|Name\n"
         "  REL|FromName|RELATIONSHIP_TYPE|ToName\n\n"
-        "LABELS — Person, Organisation, Location, Event, Concept, Technology, Output, Entity.\n"
+        "LABELS — Person, Organisation, Location, Event, Concept, Technology, Output, Date, Quantity, Entity.\n"
         "RELATIONSHIP_TYPE — verb phrase from the text in UPPER_SNAKE_CASE.\n\n"
         "RULES:\n"
         "1. Only output entities NOT already in the existing graph.\n"
@@ -191,7 +205,7 @@ class TextAnalizer:
         "  REL|NewEntityName|RELATIONSHIP_TYPE|ExistingEntityName\n"
         "  NODE|Label|AnotherNewEntity\n"
         "  REL|AnotherNewEntity|RELATIONSHIP_TYPE|ExistingEntityName\n\n"
-        "LABELS — Technology, Person, Organisation, Location, Event, Concept, Output, Entity.\n"
+        "LABELS — Technology, Person, Organisation, Location, Event, Concept, Output, Date, Quantity, Entity.\n"
         "RELATIONSHIP_TYPE — a verb or verb phrase whose words appear in the passage, in UPPER_SNAKE_CASE.\n"
         "  WRONG (generic, not in text): RELATED_TO, ASSOCIATED_WITH, IS_ALTERNATIVE_TO\n"
         "  RIGHT (grounded in text): use the actual verb from the response passage.\n"
@@ -284,7 +298,9 @@ class TextAnalizer:
             name = name.replace("_", " ").replace("-", " ").replace("/", " ")
             name = _re.sub(r'\s*\([^)]*\)', '', name).strip()
             name = _re.sub(r'\s+', ' ', name)
-            return name.title()
+            name = name.title()
+            name = _re.sub(r'\b(Bc|Bce|Ad|Ce)\b', lambda m: m.group().upper(), name)
+            return name
 
         def _is_valid_node_name(name: str) -> bool:
             if not name or len(name) < 3:
@@ -302,7 +318,7 @@ class TextAnalizer:
 
         _valid_labels = {
             "Person", "Organisation", "Location", "Event",
-            "Concept", "Technology", "Output", "Entity",
+            "Concept", "Technology", "Output", "Date", "Quantity", "Entity",
         }
 
         for line in raw.splitlines():
@@ -414,7 +430,7 @@ class TextAnalizer:
         raw = ""
         line_buf = ""
         token_count = _generation_progress.get(file_path, {}).get("chunk_tokens", 0)
-        _PREVIEW_LABELS = {"Person", "Organisation", "Location", "Event", "Concept", "Technology", "Output", "Entity"}
+        _PREVIEW_LABELS = {"Person", "Organisation", "Location", "Event", "Concept", "Technology", "Output", "Date", "Quantity", "Entity"}
 
         def _safe(s: str) -> str:
             return s.replace("\\", "\\\\").replace("'", "\\'")
@@ -428,7 +444,9 @@ class TextAnalizer:
             name = name.replace("_", " ").replace("-", " ").replace("/", " ")
             name = _re.sub(r'\s*\([^)]*\)', '', name).strip()
             name = _re.sub(r'\s+', ' ', name)
-            return name.title()
+            name = name.title()
+            name = _re.sub(r'\b(Bc|Bce|Ad|Ce)\b', lambda m: m.group().upper(), name)
+            return name
 
         def _valid(name: str) -> bool:
             if not name or len(name) < 3:
@@ -700,7 +718,9 @@ class TextAnalizer:
         def norm(name: str) -> str:
             name = name.strip().replace("_", " ")
             name = _re.sub(r'\s*\([^)]*\)', '', name).strip()
-            return name.title()
+            name = name.title()
+            name = _re.sub(r'\b(Bc|Bce|Ad|Ce)\b', lambda m: m.group().upper(), name)
+            return name
 
         match_lines = []
         for line in raw.splitlines():
@@ -745,6 +765,44 @@ class TextAnalizer:
                 )
 
         return "\n".join(match_lines)
+
+    def _extract_date_nodes(self: TextAnalizer, text: str, file_path: str, accumulated: str) -> str:
+        import re as _re
+
+        def _normalize_date(raw: str) -> str:
+            raw = raw.strip()
+            raw = _re.sub(r'\s+', ' ', raw)
+            raw = raw.title()
+            raw = _re.sub(r'\b(Bc|Bce|Ad|Ce)\b', lambda m: m.group().upper(), raw)
+            return raw
+
+        def _safe(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("'", "\\'")
+
+        patterns = [
+            # Full dates: "12 July 100 BC", "15 March 44 BC"
+            r'\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+\s+(?:BC|AD|BCE|CE)\b',
+            # Year + era suffix: "60 BC", "44 BC", "50 AD", "100 BCE"
+            r'\b\d+\s+(?:BC|AD|BCE|CE)\b',
+            # Era prefix: "AD 14", "CE 500"
+            r'\b(?:AD|BCE|CE)\s+\d+\b',
+        ]
+
+        found: set = set()
+        for pat in patterns:
+            for m in _re.finditer(pat, text, _re.IGNORECASE):
+                found.add(_normalize_date(m.group()))
+
+        existing_names = set(self._names_from_cypher(accumulated))
+        lines = []
+        for name in sorted(found):
+            if name in existing_names:
+                continue
+            lines.append(
+                f"MERGE (n:Date {{name: '{_safe(name)}', file_path: '{_safe(file_path)}'}}) "
+                f"ON CREATE SET n.file_path = '{_safe(file_path)}'"
+            )
+        return "\n".join(lines)
 
     def text_to_cypher_chunked(self: TextAnalizer, text: str, repo_path: str, file_path: str, on_chunk=None) -> str:
         chunks = self._split_into_chunks(text)
@@ -817,6 +875,12 @@ class TextAnalizer:
                         accumulated = accumulated + "\n" + orphan_result
                         if on_chunk:
                             on_chunk(orphan_result)
+
+            date_cypher = self._extract_date_nodes(text, file_path, accumulated)
+            if date_cypher.strip():
+                accumulated = accumulated + "\n" + date_cypher
+                if on_chunk:
+                    on_chunk(date_cypher)
 
             return accumulated
         finally:

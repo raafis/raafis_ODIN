@@ -4,7 +4,7 @@ import PromptBar from "../PromptBar/PromptBar";
 import ChatPanel, { ChatEntry } from "../ChatPanel/ChatPanel";
 import * as S from "./Main.styles";
 import { useApp } from "../hooks/useApp";
-import { Edge, Node } from "src/shared/types/graphTypes";
+import { Edge, Node, ClusterClickInfo } from "src/shared/types/graphTypes";
 import { fetchData } from "src/util/fetchData";
 import { FileSystemAdapter, Notice, TAbstractFile, TFile } from "obsidian";
 import getEditorPosition from "src/util/getEditorPosition";
@@ -118,6 +118,17 @@ const Main: React.FC = (): React.JSX.Element => {
 	const summaryLoadingNodeRef = useRef<{ file: string; nodeId: string } | null>(null);
 	const graphEverExistedRef = useRef<Set<string>>(new Set());
 	const [backgroundLoadingMap, setBackgroundLoadingMap] = useState<Map<string, string>>(new Map());
+	const [activeCluster, setActiveCluster] = useState<ClusterClickInfo | null>(null);
+	const [clusterSummary, setClusterSummary] = useState<string | null>(null);
+	const [clusterSummaryLoading, setClusterSummaryLoading] = useState(false);
+	const [clusterExpanded, setClusterExpanded] = useState(false);
+	const [clusterCopied, setClusterCopied] = useState(false);
+	const clusterSummaryAbortRef = useRef<AbortController | null>(null);
+	const activeClusterRef = useRef<ClusterClickInfo | null>(null);
+	useEffect(() => { activeClusterRef.current = activeCluster; }, [activeCluster]);
+	const clusterExpandedRef = useRef(false);
+	useEffect(() => { clusterExpandedRef.current = clusterExpanded; }, [clusterExpanded]);
+	const clusterLoadingHubIdRef = useRef<string | null>(null);
 	const backgroundLoadingNodeId = backgroundLoadingMap.get(selectedFile);
 	const activeNodeIdRef = useRef<string | undefined>(undefined);
 	useEffect(() => { activeNodeIdRef.current = activeNodeId; }, [activeNodeId]);
@@ -130,6 +141,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	const onNodeClickCallback = async (node: NodeSingular) => {
 		if (node.data().isChatNode) return;
 		if (node.data().id?.startsWith('preview_')) return;
+		clearActiveCluster();
 		const capturedFile = selectedFile;
 		const nodeId = node.data().id;
 
@@ -302,6 +314,96 @@ const Main: React.FC = (): React.JSX.Element => {
 	const handleGetSummary = () => {
 		if (!activeNodeId || data.nodes.find(n => n.data.id === activeNodeId)?.data.isChatNode) return;
 		fetchAndCacheSummary(activeNodeId, selectedFile);
+	};
+
+	const clearActiveCluster = () => {
+		setActiveCluster(null);
+		setClusterSummary(null);
+		setClusterSummaryLoading(false);
+		setClusterExpanded(false);
+		setClusterCopied(false);
+	};
+
+	const fetchClusterSummary = async (hubNodeId: string, regenerate = false) => {
+		const capturedFile = selectedFile;
+		const cacheKey = `${capturedFile}::${hubNodeId}`;
+		if (!regenerate && nodeSummaryCacheRef.current.has(cacheKey)) {
+			setClusterSummary(nodeSummaryCacheRef.current.get(cacheKey) ?? null);
+			return;
+		}
+		if (clusterLoadingHubIdRef.current === hubNodeId) {
+			clusterSummaryAbortRef.current?.abort();
+		}
+		const controller = new AbortController();
+		clusterSummaryAbortRef.current = controller;
+		clusterLoadingHubIdRef.current = hubNodeId;
+		setClusterSummaryLoading(true);
+		setClusterSummary(null);
+		try {
+			const result = await fetchData(
+				"http://localhost:8000/knowledge_base/notes/node_summary",
+				{ repo: { path: root, type: "Notes" }, id: hubNodeId, regenerate },
+				undefined, undefined, controller.signal
+			);
+			const content = result?.content ?? null;
+			clusterLoadingHubIdRef.current = null;
+			if (!controller.signal.aborted) {
+				nodeSummaryCacheRef.current.set(cacheKey, content);
+				setCachedNodeIds(prev => new Set([...prev, hubNodeId]));
+				if (activeClusterRef.current?.hubNodeId === hubNodeId) {
+					setClusterSummary(content);
+					setClusterSummaryLoading(false);
+				}
+			}
+		} catch (error: any) {
+			if (clusterLoadingHubIdRef.current === hubNodeId) clusterLoadingHubIdRef.current = null;
+			if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') return;
+			if (!controller.signal.aborted && activeClusterRef.current?.hubNodeId === hubNodeId) {
+				setClusterSummaryLoading(false);
+			}
+		}
+	};
+
+	const handleCopyClusterSummary = () => {
+		if (!clusterSummary) return;
+		navigator.clipboard.writeText(clusterSummary).then(() => {
+			setClusterCopied(true);
+			setTimeout(() => setClusterCopied(false), 2000);
+		}).catch(() => new Notice("Failed to copy summary."));
+	};
+
+	const handleRegenerateClusterSummary = () => {
+		if (!activeCluster) return;
+		const cacheKey = `${selectedFile}::${activeCluster.hubNodeId}`;
+		nodeSummaryCacheRef.current.delete(cacheKey);
+		setCachedNodeIds(prev => { const next = new Set(prev); next.delete(activeCluster.hubNodeId); return next; });
+		setClusterSummary(null);
+		fetchClusterSummary(activeCluster.hubNodeId, true);
+	};
+
+	const handleClearClusterSummary = () => {
+		if (activeCluster) {
+			const cacheKey = `${selectedFile}::${activeCluster.hubNodeId}`;
+			nodeSummaryCacheRef.current.delete(cacheKey);
+			setCachedNodeIds(prev => { const next = new Set(prev); next.delete(activeCluster.hubNodeId); return next; });
+		}
+		setClusterSummary(null);
+	};
+
+	const onClusterClickCallback = (info: ClusterClickInfo) => {
+		setActiveCluster(info);
+		setClusterExpanded(info.alreadyExpanded ?? false);
+		setClusterCopied(false);
+		setActiveNodeId(undefined);
+		setSummary(null);
+		setSummaryLoading(false);
+		setSideTab("summary");
+		const cacheKey = `${selectedFile}::${info.hubNodeId}`;
+		const cached = nodeSummaryCacheRef.current.has(cacheKey)
+			? (nodeSummaryCacheRef.current.get(cacheKey) ?? null)
+			: null;
+		setClusterSummary(cached);
+		setClusterSummaryLoading(clusterLoadingHubIdRef.current === info.hubNodeId && !cached);
 	};
 
 	const handleRegenerateSummary = () => {
@@ -615,6 +717,7 @@ const Main: React.FC = (): React.JSX.Element => {
 
 	useEffect(() => {
 		if (!firstRender) {
+			clearActiveCluster();
 			setData({ nodes: [], edges: [] });
 			setHasNonTitleContent(false);
 			const saved = activeNodePerFileRef.current.get(selectedFile);
@@ -856,15 +959,28 @@ const Main: React.FC = (): React.JSX.Element => {
 						onActiveNodeIdChange={handleActiveNodeIdChange}
 						cachedNodeIds={cachedNodeIds}
 						loadingNodeId={backgroundLoadingNodeId}
+						loadingClusterHubId={clusterSummaryLoading ? activeCluster?.hubNodeId : undefined}
 						nodeClickCallback={onNodeClickCallback}
 						edgeClickCallback={onEdgeClickCallback}
 						chatHighlightedNodeIds={chatHighlightedNodeIds}
+						onClusterClick={onClusterClickCallback}
+						onClusterCollapsed={(communityId) => {
+							if (activeClusterRef.current?.communityId === communityId) {
+								setClusterExpanded(false);
+							}
+						}}
+						onClusterModeChange={(isActive) => {
+							if (!isActive) clearActiveCluster();
+						}}
 						onBackgroundClick={() => {
 						setSummary(null);
 						setSummaryLoading(false);
 						setChatHighlightedNodeIds(new Set());
 						setActiveChatNodes(null);
 						clearHighlight();
+						if (!clusterExpandedRef.current) {
+							clearActiveCluster();
+						}
 					}}
 						visible={true}
 						disabled={disabled}
@@ -887,33 +1003,74 @@ const Main: React.FC = (): React.JSX.Element => {
 					</S.SideTabBar>
 					{sideTab === "summary" && (
 						<>
-							{regeneratingFile !== selectedFile && summaryLoading && (
-								<S.SummaryLoadingRow>
-									<S.LoadingIcon />
-									<S.SummaryStopButton onClick={handleStopSummary}>Cancel</S.SummaryStopButton>
-								</S.SummaryLoadingRow>
-							)}
-							{regeneratingFile !== selectedFile && !summaryLoading && summary && <S.SummaryText>{summary}</S.SummaryText>}
-							{regeneratingFile !== selectedFile && !summaryLoading && summary && (
-								<S.ButtonRow>
-									<S.CopyButton onClick={handleCopySummary}>
-										{copied ? <S.CheckIcon /> : <S.CopyIcon />}
-									</S.CopyButton>
-									{activeNodeId && (
-										<S.RegenerateSummaryButton onClick={handleRegenerateSummary}>
-											<S.RegenerateIcon />
-										</S.RegenerateSummaryButton>
+							{activeCluster ? (
+								<>
+									<S.ClusterPanelTitle>{activeCluster.label}</S.ClusterPanelTitle>
+									<S.ClusterPanelMeta>{activeCluster.memberIds.length} nodes in cluster</S.ClusterPanelMeta>
+									{clusterSummaryLoading && (
+										<S.SummaryLoadingRow>
+											<S.LoadingIcon />
+											<S.SummaryStopButton onClick={() => { clusterSummaryAbortRef.current?.abort(); setClusterSummaryLoading(false); }}>Cancel</S.SummaryStopButton>
+										</S.SummaryLoadingRow>
 									)}
-									<S.TrashButton onClick={handleClearSummary}>
-										<S.TrashIcon />
-									</S.TrashButton>
-								</S.ButtonRow>
-							)}
-							{regeneratingFile !== selectedFile && !summaryLoading && !summary && !activeNodeId && data.nodes.length > 0 && (
-								<S.SummaryPlaceholder>Click a node to see its connections</S.SummaryPlaceholder>
-							)}
-							{regeneratingFile !== selectedFile && !summaryLoading && !summary && activeNodeId && (
-								<S.GetSummaryButton onClick={handleGetSummary}>Get Summary</S.GetSummaryButton>
+									{!clusterSummaryLoading && clusterSummary && <S.SummaryText>{clusterSummary}</S.SummaryText>}
+									{!clusterSummaryLoading && clusterSummary && (
+										<S.ButtonRow>
+											<S.CopyButton onClick={handleCopyClusterSummary}>
+												{clusterCopied ? <S.CheckIcon /> : <S.CopyIcon />}
+											</S.CopyButton>
+											<S.RegenerateSummaryButton onClick={handleRegenerateClusterSummary}>
+												<S.RegenerateIcon />
+											</S.RegenerateSummaryButton>
+											<S.TrashButton onClick={handleClearClusterSummary}>
+												<S.TrashIcon />
+											</S.TrashButton>
+										</S.ButtonRow>
+									)}
+									{!clusterSummaryLoading && !clusterSummary && (
+										<S.GetSummaryButton onClick={() => fetchClusterSummary(activeCluster.hubNodeId)}>Get Summary</S.GetSummaryButton>
+									)}
+									{!clusterExpanded ? (
+										<S.ExpandClusterButton onClick={() => { activeCluster.expand(); setClusterExpanded(true); }}>
+											Expand Cluster
+										</S.ExpandClusterButton>
+									) : (
+										<S.ExpandClusterButton onClick={() => { activeCluster.collapse(); setClusterExpanded(false); }}>
+											Re-Cluster
+										</S.ExpandClusterButton>
+									)}
+								</>
+							) : (
+								<>
+									{regeneratingFile !== selectedFile && summaryLoading && (
+										<S.SummaryLoadingRow>
+											<S.LoadingIcon />
+											<S.SummaryStopButton onClick={handleStopSummary}>Cancel</S.SummaryStopButton>
+										</S.SummaryLoadingRow>
+									)}
+									{regeneratingFile !== selectedFile && !summaryLoading && summary && <S.SummaryText>{summary}</S.SummaryText>}
+									{regeneratingFile !== selectedFile && !summaryLoading && summary && (
+										<S.ButtonRow>
+											<S.CopyButton onClick={handleCopySummary}>
+												{copied ? <S.CheckIcon /> : <S.CopyIcon />}
+											</S.CopyButton>
+											{activeNodeId && (
+												<S.RegenerateSummaryButton onClick={handleRegenerateSummary}>
+													<S.RegenerateIcon />
+												</S.RegenerateSummaryButton>
+											)}
+											<S.TrashButton onClick={handleClearSummary}>
+												<S.TrashIcon />
+											</S.TrashButton>
+										</S.ButtonRow>
+									)}
+									{regeneratingFile !== selectedFile && !summaryLoading && !summary && !activeNodeId && data.nodes.length > 0 && (
+										<S.SummaryPlaceholder>Click a node to see its connections</S.SummaryPlaceholder>
+									)}
+									{regeneratingFile !== selectedFile && !summaryLoading && !summary && activeNodeId && (
+										<S.GetSummaryButton onClick={handleGetSummary}>Get Summary</S.GetSummaryButton>
+									)}
+								</>
 							)}
 						</>
 					)}

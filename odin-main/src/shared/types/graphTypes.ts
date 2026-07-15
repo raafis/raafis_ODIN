@@ -7,6 +7,7 @@ export interface Node {
         selected?: boolean;
         path?: string;
         isChatNode?: boolean;
+        group?: string;
     };
     classes?: string;
 }
@@ -20,4 +21,14 @@ export interface Edge {
         target: string;
     };
     classes?: string;
+}
+
+export interface ClusterClickInfo {
+    communityId: string;
+    memberIds: string[];
+    label: string;
+    hubNodeId: string;
+    expand: () => void;
+    collapse: () => void;
+    alreadyExpanded?: boolean;
 }
