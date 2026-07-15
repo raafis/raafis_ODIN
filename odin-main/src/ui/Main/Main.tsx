@@ -390,7 +390,7 @@ const Main: React.FC = (): React.JSX.Element => {
 		setClusterSummary(null);
 	};
 
-	const onClusterClickCallback = (info: ClusterClickInfo) => {
+	const onClusterClickCallback = async (info: ClusterClickInfo) => {
 		setActiveCluster(info);
 		setClusterExpanded(info.alreadyExpanded ?? false);
 		setClusterCopied(false);
@@ -404,6 +404,31 @@ const Main: React.FC = (): React.JSX.Element => {
 			: null;
 		setClusterSummary(cached);
 		setClusterSummaryLoading(clusterLoadingHubIdRef.current === info.hubNodeId && !cached);
+
+		const capturedFile = selectedFile;
+		await app?.workspace.openLinkText("", capturedFile);
+		const editorContent = app?.workspace.activeEditor?.editor?.getValue() || "";
+		try {
+			const results = await Promise.all(
+				info.memberIds.map(id =>
+					fetchData(
+						"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+						{ repo: { path: root, type: "Notes" }, id }
+					).catch(() => [] as Sentence[])
+				)
+			);
+			const selections: Selection[] = [];
+			(results.flat() as Sentence[]).forEach((element) => {
+				selections.push(getEditorPosition(editorContent, element.content));
+			});
+			if (selections.length > 0) {
+				const ed = app?.workspace.activeEditor?.editor;
+				if (ed) {
+					lastHighlightedEditorRef.current = ed;
+					ed.setSelections(selections);
+				}
+			}
+		} catch {}
 	};
 
 	const handleRegenerateSummary = () => {
@@ -429,54 +454,38 @@ const Main: React.FC = (): React.JSX.Element => {
 	};
 
 	const onEdgeClickCallback = async (edge: EdgeSingular) => {
-		if (edge.source().data().id?.startsWith('preview_')) return;
-		if (disabled) return;
-		let ignoreResults = false;
-		{
-			setDisabled(true);
-			const active = selectedFile;
-			const repoBody = { path: root, type: "Notes" };
+		const srcId = edge.source().data().id as string | undefined;
+		if (srcId?.startsWith('preview_') || srcId?.startsWith('cluster_')) return;
 
-			// Refocus the note editor before fetching — clicking the canvas steals focus
-			await app?.workspace.openLinkText("", active);
+		const capturedFile = selectedFile;
+		await app?.workspace.openLinkText("", capturedFile);
+		const editorContent = app?.workspace.activeEditor?.editor?.getValue() || "";
 
-			await Promise.all([
-				fetchData("http://localhost:8000/knowledge_base/notes/node_to_sentences", {
-					repo: repoBody,
-					id: edge.source().data().id,
-				}),
-				fetchData("http://localhost:8000/knowledge_base/notes/node_to_sentences", {
-					repo: repoBody,
-					id: edge.target().data().id,
-				}),
-			])
-				.then(([srcData, dstData]) => {
-					const srcContents = new Set(srcData.map((s: Sentence) => s.content));
-					const shared = dstData.filter((s: Sentence) => srcContents.has(s.content));
-					const results: Sentence[] = shared.length > 0 ? shared : [...srcData, ...dstData];
+		try {
+			const [srcData, tgtData] = await Promise.all([
+				fetchData(
+					"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+					{ repo: { path: root, type: "Notes" }, id: srcId }
+				).catch(() => [] as Sentence[]),
+				fetchData(
+					"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+					{ repo: { path: root, type: "Notes" }, id: edge.target().data().id }
+				).catch(() => [] as Sentence[]),
+			]);
 
-					const selections: Selection[] = [];
-					results.forEach((element: Sentence) => {
-						selections.push(
-							getEditorPosition(
-								app?.workspace.activeEditor?.editor?.getValue() || "",
-								element.content
-							)
-						);
-					});
+			const srcContents = new Set((srcData as Sentence[]).map((s) => s.content));
+			const shared = (tgtData as Sentence[]).filter((s) => srcContents.has(s.content));
+			const results: Sentence[] = shared.length > 0 ? shared : [...srcData as Sentence[], ...tgtData as Sentence[]];
 
-					if (active === selectedFile && !ignoreResults && selections.length > 0)
-						app?.workspace.activeEditor?.editor?.setSelections(selections);
-				})
-				.catch(() => {
-					new Notice(Messages.fetchFailed);
-				});
-			setDisabled(false);
-		}
-
-		return () => {
-			ignoreResults = true;
-		};
+			const selections: Selection[] = results.map(el => getEditorPosition(editorContent, el.content));
+			if (selections.length > 0) {
+				const ed = app?.workspace.activeEditor?.editor;
+				if (ed) {
+					lastHighlightedEditorRef.current = ed;
+					ed.setSelections(selections);
+				}
+			}
+		} catch {}
 	};
 
 	const handleActiveNodeIdChange = (id: string | undefined) => {
@@ -1031,7 +1040,20 @@ const Main: React.FC = (): React.JSX.Element => {
 										<S.GetSummaryButton onClick={() => fetchClusterSummary(activeCluster.hubNodeId)}>Get Summary</S.GetSummaryButton>
 									)}
 									{!clusterExpanded ? (
-										<S.ExpandClusterButton onClick={() => { activeCluster.expand(); setClusterExpanded(true); }}>
+										<S.ExpandClusterButton onClick={() => {
+											const hubId = activeCluster.hubNodeId;
+											activeCluster.expand();
+											clearActiveCluster();
+											setActiveNodeId(hubId);
+											const cacheKey = `${selectedFile}::${hubId}`;
+											if (nodeSummaryCacheRef.current.has(cacheKey)) {
+												setSummary(nodeSummaryCacheRef.current.get(cacheKey) ?? null);
+											} else {
+												setSummary(null);
+											}
+											setSummaryLoading(false);
+											activeNodePerFileRef.current.set(selectedFile, { nodeId: hubId, summary: null, loading: false });
+										}}>
 											Expand Cluster
 										</S.ExpandClusterButton>
 									) : (

@@ -202,6 +202,15 @@ const Graph: React.FC<GraphProps> = ({
 		if (!cyRef.current) return;
 		computeClusterGroups();
 
+		// Restore user-dragged cluster bubble positions saved in the position cache
+		const cachedPos = positionCacheRef.current.get(cacheKeyRef.current);
+		if (cachedPos) {
+			clusterGroupsRef.current.forEach((entry, communityId) => {
+				const saved = cachedPos[`cluster_${communityId}`];
+				if (saved) entry.centroid = { ...saved };
+			});
+		}
+
 		// Build reverse lookup: nodeId → communityId (key in clusterGroupsRef)
 		const nodeToCluster = new Map<string, string>();
 		clusterGroupsRef.current.forEach((entry, communityId) => {
@@ -325,6 +334,20 @@ const Graph: React.FC<GraphProps> = ({
 		const entry = clusterGroupsRef.current.get(group);
 		if (!entry || entry.nodeIds.length <= 1) return;
 
+		// Persist cluster bubble's current position to cache before removing it,
+		// so enterClustered() can restore it if the graph re-initialises.
+		const bubbleNode = cyRef.current.$id(`cluster_${group}`);
+		if (bubbleNode.length) {
+			const pos = bubbleNode.position();
+			entry.centroid = { x: pos.x, y: pos.y };
+			const cache = positionCacheRef.current.get(cacheKeyRef.current);
+			if (cache) {
+				cache[`cluster_${group}`] = { x: pos.x, y: pos.y };
+				const fp = filePathRef.current;
+				if (fp) localStorage.setItem(`odin_graph_positions_${fp}`, JSON.stringify(cache));
+			}
+		}
+
 		cyRef.current.batch(() => {
 			// Remove the cluster node (also removes its incident cluster edges)
 			cyRef.current!.$id(`cluster_${group}`).remove();
@@ -413,6 +436,50 @@ const Graph: React.FC<GraphProps> = ({
 		expandedGroupsRef.current.delete(group);
 		syncExpandedState();
 		onClusterCollapsedRef.current?.(group);
+	};
+
+	const highlightClusterMembers = (communityId: string) => {
+		if (!cyRef.current) return;
+		const entry = clusterGroupsRef.current.get(communityId);
+		if (!entry) return;
+		const memberIds = new Set(entry.nodeIds);
+		cyRef.current.batch(() => {
+			cyRef.current!.elements().removeClass("dimmed");
+			entry.nodeIds.forEach(id => {
+				const node = cyRef.current!.$id(id);
+				if (node.length) node.addClass("cluster-hover-highlight");
+			});
+			cyRef.current!.elements().forEach(el => {
+				if (el.isNode()) {
+					if (!memberIds.has(el.id())) el.addClass("dimmed");
+				} else {
+					const edge = el as cytoscape.EdgeSingular;
+					if (!memberIds.has(edge.source().id()) && !memberIds.has(edge.target().id())) {
+						edge.addClass("dimmed");
+					}
+				}
+			});
+		});
+	};
+
+	const clearClusterHighlight = () => {
+		if (!cyRef.current) return;
+		cyRef.current.batch(() => {
+			cyRef.current!.nodes().removeClass("cluster-hover-highlight");
+			cyRef.current!.elements().removeClass("dimmed");
+			const activeId = activeNodeIdRef.current;
+			if (activeId) {
+				const activeNode = cyRef.current!.$id(activeId);
+				if (activeNode.length && !activeNode.hidden()) {
+					cyRef.current!.elements()
+						.not(activeNode)
+						.not(activeNode.connectedEdges())
+						.not(activeNode.outgoers("node"))
+						.not(activeNode.incomers("node"))
+						.addClass("dimmed");
+				}
+			}
+		});
 	};
 
 	const syncExpandedState = () => {
@@ -619,7 +686,6 @@ const Graph: React.FC<GraphProps> = ({
 	}, [nodeClickCallback]);
 
 	useEffect(() => {
-		console.log("render");
 		cyRef.current = cytoscape({
 			container: document.getElementById("cy"),
 			elements: { nodes: [], edges: [] },
@@ -634,7 +700,6 @@ const Graph: React.FC<GraphProps> = ({
 		registerHoverHandler();
 
 		cyRef.current?.on("click", "edge", (event: cytoscape.EventObject) => {
-			console.log("[ODIN] edge clicked in Graph, target:", event.target.id(), "callback:", !!edgeClickCallbackRef.current);
 			edgeClickCallbackRef.current?.(event.target);
 		});
 
@@ -867,9 +932,13 @@ const Graph: React.FC<GraphProps> = ({
 						<>
 							<ClusterMenuLabel>Expanded clusters</ClusterMenuLabel>
 							{expandedClusterList.map(({ communityId, label }) => (
-								<ClusterMenuRow key={communityId}>
+								<ClusterMenuRow
+									key={communityId}
+									onMouseEnter={() => highlightClusterMembers(communityId)}
+									onMouseLeave={() => clearClusterHighlight()}
+								>
 									<ClusterMenuRowLabel title={label}>{label}</ClusterMenuRowLabel>
-									<ClusterMenuReClusterBtn onClick={() => collapseCluster(communityId)}>
+									<ClusterMenuReClusterBtn onClick={() => { clearClusterHighlight(); collapseCluster(communityId); }}>
 										Re-Cluster
 									</ClusterMenuReClusterBtn>
 								</ClusterMenuRow>

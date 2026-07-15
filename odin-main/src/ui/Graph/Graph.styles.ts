@@ -522,6 +522,14 @@ export const GraphStyle: any[] = [
         },
     },
     {
+        selector: "node.cluster-hover-highlight",
+        style: {
+            "border-width": "3px",
+            "border-color": "#f59e0b",
+            opacity: 1,
+        },
+    },
+    {
         selector: 'edge[id^="cluster_e_"]',
         style: {
             "line-style": "dashed",
