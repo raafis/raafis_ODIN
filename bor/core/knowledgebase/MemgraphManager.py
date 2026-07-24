@@ -213,8 +213,8 @@ class MemgraphManager:
         res = self.db.execute_and_fetch(query)
         return next(res)['schema']
 
-    def vector_search_query(self: MemgraphManager) -> List[Any]:
-        query = CQ.get_vector_search_query()
+    def vector_search_query(self: MemgraphManager, limit: int = 3) -> List[Any]:
+        query = CQ.get_vector_search_query(limit=limit)
         res = self.db.execute_and_fetch(query)
         return list(res)
 
@@ -223,6 +223,14 @@ class MemgraphManager:
         res = self.db.execute_and_fetch(query)
         row = next(res, None)
         return row['embeddings'] if row else None
+
+    def get_node_neighbor_ids(self: MemgraphManager, node_id: int) -> List[int]:
+        res = self.db.execute_and_fetch(CQ.get_node_neighbors_query(node_id))
+        return [row['neighbor_id'] for row in res]
+
+    def get_node_ids_for_file(self: MemgraphManager, file_path: str) -> List[int]:
+        res = self.db.execute_and_fetch(CQ.get_node_ids_for_file_query(file_path))
+        return [row['node_id'] for row in res]
 
     def get_node_name(self: MemgraphManager, node_id: int) -> Optional[str]:
         res = self.db.execute_and_fetch(f"MATCH (n) WHERE id(n) = {node_id} RETURN n.name AS name")

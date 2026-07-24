@@ -16,7 +16,7 @@ class Searcher:
         self.accessed_node_ids: list[int] = []
         return
 
-    def search_graph(self: Searcher, query_text: Optional[str] = None, query_embeddings: Optional[List[float]] = None) -> List[Any]:
+    def search_graph(self: Searcher, query_text: Optional[str] = None, query_embeddings: Optional[List[float]] = None, limit: int = 3) -> List[Any]:
         assert (query_text is not None) or (query_embeddings is not None)
         if query_text is not None:
             emb_vector = Embeddings.get_embedding(query_text)
@@ -26,7 +26,7 @@ class Searcher:
         self.mm.create_temp_nodes(emb_vector)
         results = None
         try:
-            results = self.mm.vector_search_query()
+            results = self.mm.vector_search_query(limit=limit)
         finally:
             self.mm.delete_temp_nodes()
         return list(results)
@@ -189,14 +189,55 @@ class Searcher:
             return []
 
     def sentence_to_node_ids(self: Searcher, sentence: str) -> List[int]:
-        cm = CollectionManager(self.repo_path)
-        res = cm.collection.query(
-            query_texts=sentence,
-            n_results=1,
-            include=['embeddings']
-        )
-        emb = res['embeddings'][0][0]
-        return [node['ID(node1)'] for node in self.search_graph(query_embeddings=emb)]
+        if len(sentence) > 300:
+            try:
+                file_path = self.most_probable_filename_for_text(query_text=sentence)
+                if file_path:
+                    return self.mm.get_node_ids_for_file(file_path)
+            except Exception:
+                pass
+        emb = Embeddings.get_embedding(sentence)
+        return [node['ID(node1)'] for node in self.search_graph(query_embeddings=emb, limit=10)]
+
+    def node_id_to_context(self: Searcher, id: int) -> tuple:
+        import pathlib
+        import nltk
+
+        stored = self.mm.get_node_source_sentences(id)
+        sentences = list(stored) if stored else []
+        file_path = self.mm.get_node_file_path(id)
+        node_emb = self.mm.embeddings_for_node(id)
+
+        if not sentences and file_path and node_emb:
+            try:
+                from core.knowledgebase.notes.CollectionManager import CollectionManager
+                cm = CollectionManager(self.repo_path)
+                res = cm.collection.query(
+                    query_embeddings=[node_emb],
+                    n_results=5,
+                    where={"file_path": file_path},
+                    include=["documents"]
+                )
+                sentences = res['documents'][0] if res['documents'] else []
+            except Exception:
+                pass
+
+        if not sentences:
+            node_name = self.mm.get_node_name(id)
+            if node_name and file_path:
+                try:
+                    text = pathlib.Path(file_path).read_text(errors="ignore")
+                    sentences = self._match_sentences(nltk.tokenize.sent_tokenize(text), node_name)
+                except Exception:
+                    pass
+
+        node_ids: List[int] = []
+        try:
+            node_ids = self.mm.get_node_neighbor_ids(id)
+        except Exception:
+            pass
+
+        return sentences, node_ids
 
     def most_probable_filename_for_text(self: Searcher, query_text: Optional[str] = None) -> str:
         cm = CollectionManager(self.repo_path)

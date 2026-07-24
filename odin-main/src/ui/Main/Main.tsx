@@ -6,7 +6,7 @@ import * as S from "./Main.styles";
 import { useApp } from "../hooks/useApp";
 import { Edge, Node, ClusterClickInfo } from "src/shared/types/graphTypes";
 import { fetchData } from "src/util/fetchData";
-import { FileSystemAdapter, Notice, TAbstractFile, TFile } from "obsidian";
+import { FileSystemAdapter, Notice, TAbstractFile, TFile, requestUrl } from "obsidian";
 import getEditorPosition from "src/util/getEditorPosition";
 import * as Messages from "src/shared/messages";
 import { fetchGraphData } from "./MainUtils";
@@ -48,6 +48,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	};
 	const [chatError, setChatError] = useState("");
 	const [chatHighlightedNodeIds, setChatHighlightedNodeIds] = useState<Set<string>>(new Set());
+	const [selectionHighlightedNodeIds, setSelectionHighlightedNodeIds] = useState<Set<string>>(new Set());
 	const [activeChatNodes, setActiveChatNodes] = useState<
 		Array<{ name: string; nodeType: string; relatedTo: string; relationship: string }> | null
 	>(null);
@@ -121,6 +122,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	const [activeCluster, setActiveCluster] = useState<ClusterClickInfo | null>(null);
 	const [clusterSummary, setClusterSummary] = useState<string | null>(null);
 	const [clusterSummaryLoading, setClusterSummaryLoading] = useState(false);
+	const [clusterLoadingHubId, setClusterLoadingHubId] = useState<string | null>(null);
 	const [clusterExpanded, setClusterExpanded] = useState(false);
 	const [clusterCopied, setClusterCopied] = useState(false);
 	const clusterSummaryAbortRef = useRef<AbortController | null>(null);
@@ -338,6 +340,7 @@ const Main: React.FC = (): React.JSX.Element => {
 		clusterSummaryAbortRef.current = controller;
 		clusterLoadingHubIdRef.current = hubNodeId;
 		setClusterSummaryLoading(true);
+		setClusterLoadingHubId(hubNodeId);
 		setClusterSummary(null);
 		try {
 			const result = await fetchData(
@@ -350,6 +353,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			if (!controller.signal.aborted) {
 				nodeSummaryCacheRef.current.set(cacheKey, content);
 				setCachedNodeIds(prev => new Set([...prev, hubNodeId]));
+				setClusterLoadingHubId(null);
 				if (activeClusterRef.current?.hubNodeId === hubNodeId) {
 					setClusterSummary(content);
 					setClusterSummaryLoading(false);
@@ -358,6 +362,7 @@ const Main: React.FC = (): React.JSX.Element => {
 		} catch (error: any) {
 			if (clusterLoadingHubIdRef.current === hubNodeId) clusterLoadingHubIdRef.current = null;
 			if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') return;
+			setClusterLoadingHubId(null);
 			if (!controller.signal.aborted && activeClusterRef.current?.hubNodeId === hubNodeId) {
 				setClusterSummaryLoading(false);
 			}
@@ -753,6 +758,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	useEffect(() => {
 		setChatError("");
 		setChatHighlightedNodeIds(new Set());
+		setSelectionHighlightedNodeIds(new Set());
 		setActiveChatNodes(null);
 	}, [selectedFile]);
 
@@ -835,6 +841,39 @@ const Main: React.FC = (): React.JSX.Element => {
 			});
 			if (ref) eventRefs.push(ref);
 		});
+
+		const findRef = app?.workspace.on("editor-menu", (menu) => {
+			const editor = app.workspace.activeEditor?.editor;
+			const selection = editor?.getSelection()?.trim();
+			if (!selection) return;
+			menu.addItem((item) => {
+				item.setTitle("Find node in graph")
+					.setIcon("search")
+					.onClick(async () => {
+						try {
+							const query = selection.length > 2000 ? selection.slice(0, 2000) : selection;
+							const response = await requestUrl({
+								url: "http://localhost:8000/knowledge_base/notes/sentence_to_nodes",
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ repo: { path: root, type: "Notes" }, content: query }),
+							});
+							const results: any[] = response.json ?? [];
+							if (!results.length) {
+								new Notice("No matching node found for the selected text.");
+								return;
+							}
+							const ids = new Set(results.map((r: any) => String(r.id)));
+							setSelectionHighlightedNodeIds(ids);
+						} catch (e: any) {
+							const detail = e?.text || e?.message || String(e);
+							new Notice("Find node in graph failed: " + detail);
+							console.error("[ODIN] sentence_to_nodes error:", e);
+						}
+					});
+			});
+		});
+		if (findRef) eventRefs.push(findRef);
 
 		let activePath = app?.workspace.activeEditor?.file?.path || "";
 		if (!activePath) {
@@ -968,10 +1007,11 @@ const Main: React.FC = (): React.JSX.Element => {
 						onActiveNodeIdChange={handleActiveNodeIdChange}
 						cachedNodeIds={cachedNodeIds}
 						loadingNodeId={backgroundLoadingNodeId}
-						loadingClusterHubId={clusterSummaryLoading ? activeCluster?.hubNodeId : undefined}
+						loadingClusterHubId={clusterLoadingHubId ?? undefined}
 						nodeClickCallback={onNodeClickCallback}
 						edgeClickCallback={onEdgeClickCallback}
 						chatHighlightedNodeIds={chatHighlightedNodeIds}
+					selectionHighlightedNodeIds={selectionHighlightedNodeIds}
 						onClusterClick={onClusterClickCallback}
 						onClusterCollapsed={(communityId) => {
 							if (activeClusterRef.current?.communityId === communityId) {
@@ -985,6 +1025,7 @@ const Main: React.FC = (): React.JSX.Element => {
 						setSummary(null);
 						setSummaryLoading(false);
 						setChatHighlightedNodeIds(new Set());
+						setSelectionHighlightedNodeIds(new Set());
 						setActiveChatNodes(null);
 						clearHighlight();
 						if (!clusterExpandedRef.current) {
@@ -1019,7 +1060,7 @@ const Main: React.FC = (): React.JSX.Element => {
 									{clusterSummaryLoading && (
 										<S.SummaryLoadingRow>
 											<S.LoadingIcon />
-											<S.SummaryStopButton onClick={() => { clusterSummaryAbortRef.current?.abort(); setClusterSummaryLoading(false); }}>Cancel</S.SummaryStopButton>
+											<S.SummaryStopButton onClick={() => { clusterSummaryAbortRef.current?.abort(); setClusterSummaryLoading(false); setClusterLoadingHubId(null); }}>Cancel</S.SummaryStopButton>
 										</S.SummaryLoadingRow>
 									)}
 									{!clusterSummaryLoading && clusterSummary && <S.SummaryText>{clusterSummary}</S.SummaryText>}

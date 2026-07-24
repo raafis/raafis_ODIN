@@ -4,7 +4,7 @@ import pathlib
 from enum import Enum
 from core.knowledgebase.Utils import Utils
 
-from fastapi import FastAPI, status, Response
+from fastapi import FastAPI, HTTPException, status, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +85,11 @@ class EdgeQuery(BaseModel):
     repo: Repo
     src_id: int
     dst_id: int
+
+
+class NodeContext(BaseModel):
+    sentences: List[str]
+    related_node_ids: List[int]
 
 
 class Paragraph(BaseModel):
@@ -490,6 +495,16 @@ def node_to_sentences(node: Node) -> List[Sentence]:
     return [Sentence(repo=node.repo, content=c) for c in searcher.node_id_to_sentences(node.id)]
 
 
+@app.post("/knowledge_base/notes/node_to_context")
+def node_to_context(node: Node) -> NodeContext:
+    try:
+        searcher = Searcher(node.repo.path)
+        sentences, node_ids = searcher.node_id_to_context(node.id)
+        return NodeContext(sentences=sentences, related_node_ids=node_ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/knowledge_base/notes/node_summary")
 def node_summary(node: Node) -> Answer:
     try:
@@ -513,8 +528,11 @@ def edge_to_sentences(edge: EdgeQuery) -> List[Sentence]:
 
 @app.post("/knowledge_base/notes/sentence_to_nodes")
 def sentence_to_nodes(sentence: Sentence) -> List[Node]:
-    searcher = Searcher(sentence.repo.path)
-    return [Node(repo=sentence.repo, id=i) for i in searcher.sentence_to_node_ids(sentence.content)]
+    try:
+        searcher = Searcher(sentence.repo.path)
+        return [Node(repo=sentence.repo, id=i) for i in searcher.sentence_to_node_ids(sentence.content)]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/knowledge_base/notes/suggest_link")

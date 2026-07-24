@@ -31,6 +31,7 @@ interface GraphProps {
 	loadingNodeId?: string;
 	loadingClusterHubId?: string;
 	chatHighlightedNodeIds?: Set<string>;
+	selectionHighlightedNodeIds?: Set<string>;
 	visible: boolean;
 	disabled: boolean;
 	filePath: string;
@@ -50,6 +51,7 @@ const Graph: React.FC<GraphProps> = ({
 	loadingNodeId,
 	loadingClusterHubId,
 	chatHighlightedNodeIds,
+	selectionHighlightedNodeIds,
 	visible,
 	disabled,
 	filePath,
@@ -80,6 +82,9 @@ const Graph: React.FC<GraphProps> = ({
 	const isModeClusteredRef = useRef(false);
 	const expandClusterRef = useRef<(group: string) => void>(() => {});
 	const collapseClusterRef = useRef<(group: string) => void>(() => {});
+	const nodeToClusterRef = useRef<Map<string, string>>(new Map());
+	const selectedClusterIdRef = useRef<string | null>(null);
+	const lockedHighlightIdRef = useRef<string | null>(null);
 	const onClusterClickRef = useRef<((info: ClusterClickInfo) => void) | undefined>(undefined);
 	const onClusterCollapsedRef = useRef<((communityId: string) => void) | undefined>(undefined);
 	const onClusterModeChangeRef = useRef<((isActive: boolean) => void) | undefined>(undefined);
@@ -198,6 +203,24 @@ const Graph: React.FC<GraphProps> = ({
 		clusterGroupsRef.current = groups;
 	};
 
+	const addProxyEdgesForNode = (cy: cytoscape.Core, memberId: string) => {
+		cy.$id(memberId).connectedEdges().forEach(edge => {
+			const eid = edge.id();
+			if (edge.hasClass("chat-node-edge") || eid.startsWith("cluster_e_") || eid.startsWith("preview_e_") || eid.startsWith("proxy_e_")) return;
+			const otherId = edge.source().id() === memberId ? edge.target().id() : edge.source().id();
+			const otherNode = cy.$id(otherId);
+			if (!otherNode.length || !otherNode.hidden()) return;
+			const otherCommunity = nodeToClusterRef.current.get(otherId);
+			if (!otherCommunity) return;
+			const bubbleId = `cluster_${otherCommunity}`;
+			if (!cy.$id(bubbleId).length) return;
+			const proxyId = `proxy_e_${memberId}_${bubbleId}`;
+			if (!cy.$id(proxyId).length) {
+				cy.add({ group: "edges", data: { id: proxyId, source: memberId, target: bubbleId }, classes: "proxy-cluster-edge" });
+			}
+		});
+	};
+
 	const enterClustered = () => {
 		if (!cyRef.current) return;
 		computeClusterGroups();
@@ -216,6 +239,7 @@ const Graph: React.FC<GraphProps> = ({
 		clusterGroupsRef.current.forEach((entry, communityId) => {
 			entry.nodeIds.forEach(id => nodeToCluster.set(id, communityId));
 		});
+		nodeToClusterRef.current = new Map(nodeToCluster);
 
 		// Precompute dashed edges between distinct multi-member clusters
 		const crossGroupEdges = new Set<string>();
@@ -253,6 +277,7 @@ const Graph: React.FC<GraphProps> = ({
 		cyRef.current.batch(() => {
 			// Remove any previously added cluster nodes (their edges are removed with them)
 			cyRef.current!.remove(".cluster-node");
+			cyRef.current!.remove(".proxy-cluster-edge");
 
 			// Hide all original nodes and edges
 			cyRef.current!.nodes().forEach(node => {
@@ -321,6 +346,8 @@ const Graph: React.FC<GraphProps> = ({
 		if (filePathRef.current) {
 			localStorage.setItem(`odin_cluster_mode_${filePathRef.current}`, "true");
 		}
+		selectedClusterIdRef.current = null;
+		lockedHighlightIdRef.current = null;
 		isModeClusteredRef.current = true;
 		setIsClustered(true);
 		setExpandedCount(0);
@@ -362,6 +389,9 @@ const Graph: React.FC<GraphProps> = ({
 					(edge as any).show();
 				}
 			});
+
+			// Add proxy edges from newly-visible members to still-collapsed cluster bubbles
+			entry.nodeIds.forEach(id => addProxyEdgesForNode(cyRef.current!, id));
 		});
 
 		expandedGroupsRef.current.add(group);
@@ -376,12 +406,19 @@ const Graph: React.FC<GraphProps> = ({
 		const memberSet = new Set(entry.nodeIds);
 
 		cyRef.current.batch(() => {
+			// Remove proxy edges from members before hiding them
+			entry.nodeIds.forEach(id => {
+				cyRef.current!.$id(id).connectedEdges()
+					.filter(e => e.id().startsWith("proxy_e_"))
+					.remove();
+			});
+
 			// Hide member nodes
 			entry.nodeIds.forEach(id => (cyRef.current!.$id(id) as any).hide());
 
 			// Hide original edges where either endpoint is a now-hidden member
 			cyRef.current!.edges().forEach(edge => {
-				if (edge.hasClass("chat-node-edge") || edge.id().startsWith("cluster_e_") || edge.id().startsWith("preview_e_")) return;
+				if (edge.hasClass("chat-node-edge") || edge.id().startsWith("cluster_e_") || edge.id().startsWith("preview_e_") || edge.id().startsWith("proxy_e_")) return;
 				if (memberSet.has(edge.source().id()) || memberSet.has(edge.target().id())) {
 					(edge as any).hide();
 				}
@@ -424,6 +461,23 @@ const Graph: React.FC<GraphProps> = ({
 						label: "",
 						fullLabel: "",
 					},
+				});
+			});
+
+			// Add proxy edges from visible nodes in expanded clusters to this newly-collapsed bubble
+			const clusterBubbleId = `cluster_${group}`;
+			entry.nodeIds.forEach(memberId => {
+				cyRef.current!.$id(memberId).connectedEdges().forEach(edge => {
+					const eid = edge.id();
+					if (edge.hasClass("chat-node-edge") || eid.startsWith("cluster_e_") || eid.startsWith("preview_e_") || eid.startsWith("proxy_e_")) return;
+					const otherId = edge.source().id() === memberId ? edge.target().id() : edge.source().id();
+					if (memberSet.has(otherId)) return;
+					const otherNode = cyRef.current!.$id(otherId);
+					if (!otherNode.length || otherNode.hidden()) return;
+					const proxyId = `proxy_e_${otherId}_${clusterBubbleId}`;
+					if (!cyRef.current!.$id(proxyId).length) {
+						cyRef.current!.add({ group: "edges", data: { id: proxyId, source: otherId, target: clusterBubbleId }, classes: "proxy-cluster-edge" });
+					}
 				});
 			});
 
@@ -521,10 +575,13 @@ const Graph: React.FC<GraphProps> = ({
 		if (!cyRef.current) return;
 		cyRef.current.batch(() => {
 			cyRef.current!.remove(".cluster-node");
+			cyRef.current!.remove(".proxy-cluster-edge");
 			(cyRef.current!.nodes() as any).show();
 			(cyRef.current!.edges() as any).show();
 		});
 		expandedGroupsRef.current = new Set();
+		selectedClusterIdRef.current = null;
+		lockedHighlightIdRef.current = null;
 		if (filePathRef.current) {
 			localStorage.removeItem(`odin_cluster_mode_${filePathRef.current}`);
 		}
@@ -563,6 +620,12 @@ const Graph: React.FC<GraphProps> = ({
 					expand: () => expandClusterRef.current(communityId),
 					collapse: () => collapseClusterRef.current(communityId),
 				});
+				const clickedBubble = event.target as cytoscape.NodeSingular;
+				if (selectedClusterIdRef.current && selectedClusterIdRef.current !== communityId) {
+					cyRef.current?.$id(`cluster_${selectedClusterIdRef.current}`).removeClass("cluster-selected");
+				}
+				clickedBubble.toggleClass("cluster-selected");
+				selectedClusterIdRef.current = clickedBubble.hasClass("cluster-selected") ? communityId : null;
 				return;
 			}
 			// If in cluster mode, check if this node belongs to an expanded cluster
@@ -653,11 +716,25 @@ const Graph: React.FC<GraphProps> = ({
 	};
 
 	const registerClickHandler = () => {
+		let mouseDownOnCanvas = false;
+		cyRef.current?.on("mousedown", (event) => {
+			mouseDownOnCanvas = event.target === cyRef.current;
+		});
+		cyRef.current?.on("mouseup", () => {
+			// Reset after click fires (click is synchronous before this setTimeout callback)
+			setTimeout(() => { mouseDownOnCanvas = false; }, 0);
+		});
 		const handleClick = (event: cytoscape.EventObject) => {
 			if (event.target === cyRef.current) {
+				if (!mouseDownOnCanvas) return;
+				mouseDownOnCanvas = false;
 				cyRef.current?.edges().deselect();
 				onActiveNodeIdChangeRef.current?.(undefined);
 				onBackgroundClickRef.current?.();
+				if (selectedClusterIdRef.current) {
+					cyRef.current?.$id(`cluster_${selectedClusterIdRef.current}`).removeClass("cluster-selected");
+					selectedClusterIdRef.current = null;
+				}
 				cyRef.current
 					?.nodes()
 					.filter((node) => node.data().priority === 1)
@@ -857,21 +934,35 @@ const Graph: React.FC<GraphProps> = ({
 
 	useEffect(() => {
 		if (!cyRef.current) return;
+		const combined = new Set([...(chatHighlightedNodeIds ?? []), ...(selectionHighlightedNodeIds ?? [])]);
 		cyRef.current.nodes().removeClass("chat-highlighted");
 		cyRef.current.edges().removeClass("chat-highlighted chat-front");
-		chatHighlightedNodeIds?.forEach(id => {
-			const node = cyRef.current?.$id(id);
+
+		// For collapsed clusters, build a reverse map from hidden member IDs to their cluster bubble ID
+		const memberToClusterNodeId = new Map<string, string>();
+		if (isModeClusteredRef.current) {
+			clusterGroupsRef.current.forEach((entry, communityId) => {
+				if (!expandedGroupsRef.current.has(communityId)) {
+					const clusterNodeId = `cluster_${communityId}`;
+					entry.nodeIds.forEach(memberId => memberToClusterNodeId.set(memberId, clusterNodeId));
+				}
+			});
+		}
+
+		combined.forEach(id => {
+			let node = cyRef.current?.$id(id);
+			if ((!node?.length || !node.visible()) && memberToClusterNodeId.has(id)) {
+				node = cyRef.current?.$id(memberToClusterNodeId.get(id)!);
+			}
 			if (node?.length) node.addClass("chat-highlighted");
 		});
 		cyRef.current.edges().forEach(edge => {
-			if (
-				chatHighlightedNodeIds?.has(edge.source().id()) &&
-				chatHighlightedNodeIds?.has(edge.target().id())
-			) {
+			if (combined.has(edge.source().id()) && combined.has(edge.target().id())) {
 				edge.addClass("chat-highlighted chat-front");
 			}
 		});
-	}, [chatHighlightedNodeIds, data]);
+	}, [chatHighlightedNodeIds, selectionHighlightedNodeIds, data]);
+
 
 	useEffect(() => {
 		if (cyRef.current) {
@@ -935,10 +1026,24 @@ const Graph: React.FC<GraphProps> = ({
 								<ClusterMenuRow
 									key={communityId}
 									onMouseEnter={() => highlightClusterMembers(communityId)}
-									onMouseLeave={() => clearClusterHighlight()}
+									onMouseLeave={() => {
+										if (lockedHighlightIdRef.current) {
+											highlightClusterMembers(lockedHighlightIdRef.current);
+										} else {
+											clearClusterHighlight();
+										}
+									}}
 								>
-									<ClusterMenuRowLabel title={label}>{label}</ClusterMenuRowLabel>
-									<ClusterMenuReClusterBtn onClick={() => { clearClusterHighlight(); collapseCluster(communityId); }}>
+									<ClusterMenuRowLabel title={label} onClick={() => {
+										if (lockedHighlightIdRef.current === communityId) {
+											lockedHighlightIdRef.current = null;
+											clearClusterHighlight();
+										} else {
+											lockedHighlightIdRef.current = communityId;
+											highlightClusterMembers(communityId);
+										}
+									}}>{label}</ClusterMenuRowLabel>
+									<ClusterMenuReClusterBtn onClick={() => { if (lockedHighlightIdRef.current === communityId) lockedHighlightIdRef.current = null; clearClusterHighlight(); collapseCluster(communityId); }}>
 										Re-Cluster
 									</ClusterMenuReClusterBtn>
 								</ClusterMenuRow>

@@ -70,16 +70,18 @@ class CypherQueryHandler:
 
     @staticmethod
     def get_set_embeddings_query(node_id: str, embeddings: List[float]) -> str:
+        emb_str = "[" + ", ".join(str(float(v)) for v in embeddings) + "]"
         return (f"MATCH (n) "
                 f"WHERE ID(n) = {node_id} "
-                f"SET n.embeddings =  {embeddings} ")
+                f"SET n.embeddings = {emb_str} ")
 
     @staticmethod
     def get_tmp_create_query(embeddings: List[float]) -> str:
+        emb_str = "[" + ", ".join(str(float(v)) for v in embeddings) + "]"
         return (f"MATCH (n) "
                 f"WITH count(n) as N "
                 f"UNWIND range(1, N) as id "
-                f"CREATE (:Temp {{name: 'temp_'+id, embeddings: {embeddings} }}) ")
+                f"CREATE (:Temp {{name: 'temp_'+id, embeddings: {emb_str} }}) ")
 
     @staticmethod
     def get_tmp_delete_query() -> str:
@@ -95,7 +97,7 @@ class CypherQueryHandler:
                 f"RETURN schema")
 
     @staticmethod
-    def get_vector_search_query() -> str:
+    def get_vector_search_query(limit: int = 3) -> str:
         return ("MATCH (m) "
                 "WHERE (NOT m.name STARTS WITH 'temp') OR (m.name IS NULL) "
                 "WITH COLLECT(m) as nodes "
@@ -105,10 +107,22 @@ class CypherQueryHandler:
                 "CALL node_similarity.cosine_pairwise('embeddings', nodes, temps) YIELD node1, node2, similarity as cosine_similarity "
                 "RETURN ID(node1), cosine_similarity "
                 "ORDER BY cosine_similarity DESC "
-                "LIMIT 3")
+                f"LIMIT {limit}")
 
     @staticmethod
     def get_embeddings_for_node_query(node_id: int) -> str:
         return (f"MATCH (m) "
                 f"WHERE ID(m) = {node_id} "
                 f"RETURN m.embeddings as embeddings")
+
+    @staticmethod
+    def get_node_neighbors_query(node_id: int) -> str:
+        return (f"MATCH (n)-[r]-(m) "
+                f"WHERE ID(n) = {node_id} "
+                f"RETURN ID(m) AS neighbor_id")
+
+    @staticmethod
+    def get_node_ids_for_file_query(file_path: str) -> str:
+        return (f"MATCH (n) "
+                f"WHERE n.file_path = '{file_path}' "
+                f"RETURN ID(n) AS node_id")

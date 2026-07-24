@@ -122,6 +122,10 @@ export const ClusterMenuRowLabel = styled.span`
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    cursor: pointer;
+    &:hover {
+        color: var(--text-accent);
+    }
 `;
 
 export const ClusterMenuReClusterBtn = styled.button`
@@ -485,10 +489,10 @@ export const GraphStyle: any[] = [
             shape: "round-rectangle",
             width: (node: cytoscape.NodeSingular) => Math.max(70, 50 + (node.data("memberCount") as number || 1) * 2) + "px",
             height: "46px",
-            "background-color": theme.colors["accent"],
+            "background-color": theme.colors["secondary-neutral"],
             "background-opacity": 0.85,
             "border-width": "2px",
-            "border-color": theme.colors["accent-light"],
+            "border-color": theme.colors["secondary-neutral"],
             label: "data(label)",
             "text-wrap": "wrap",
             "text-max-width": "130px",
@@ -505,6 +509,25 @@ export const GraphStyle: any[] = [
             "border-color": theme.colors["accent-light"],
             "border-width": "3px",
             "background-opacity": 1,
+        },
+    },
+    {
+        selector: "node.cluster-node.cluster-selected",
+        style: {
+            "background-color": theme.colors["accent"],
+            "background-opacity": 1,
+            "border-width": "2px",
+            "border-color": theme.colors["accent"],
+        },
+    },
+    {
+        selector: "node.cluster-node.chat-highlighted",
+        style: {
+            "background-color": "#3b82f6",
+            "background-opacity": 1,
+            "border-width": "3px",
+            "border-color": "#2563eb",
+            "border-opacity": 1,
         },
     },
     {
@@ -531,6 +554,18 @@ export const GraphStyle: any[] = [
     },
     {
         selector: 'edge[id^="cluster_e_"]',
+        style: {
+            "line-style": "dashed",
+            "line-color": theme.colors["secondary-neutral"],
+            "target-arrow-color": theme.colors["secondary-neutral"],
+            "line-dash-pattern": [6, 4],
+            opacity: 0.55,
+            label: "",
+            width: 1.5,
+        },
+    },
+    {
+        selector: "edge.proxy-cluster-edge",
         style: {
             "line-style": "dashed",
             "line-color": theme.colors["secondary-neutral"],
