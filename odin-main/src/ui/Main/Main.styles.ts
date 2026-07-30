@@ -22,8 +22,9 @@ export const ContentRow = styled.div`
 `;
 
 export const SidePanel = styled.div`
+    position: relative;
     width: 260px;
-    min-width: 200px;
+    min-width: 160px;
     flex-shrink: 0;
     border-left: 1px solid var(--background-modifier-border);
     padding: var(--size-4-3);
@@ -31,6 +32,20 @@ export const SidePanel = styled.div`
     display: flex;
     flex-direction: column;
     gap: var(--size-4-2);
+`;
+
+export const ResizeHandle = styled.div`
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 5px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 10;
+    &:hover {
+        background: var(--interactive-accent);
+        opacity: 0.4;
+    }
 `;
 
 export const SideTabBar = styled.div`
@@ -292,6 +307,7 @@ export const GraphWrapper = styled.div`
     flex: 1;
     min-width: 0;
     height: 100%;
+    overflow: hidden;
 `;
 
 export const GenerateButtonOverlay = styled.div`

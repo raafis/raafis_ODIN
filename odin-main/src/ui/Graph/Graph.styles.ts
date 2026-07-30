@@ -104,30 +104,6 @@ export const ClusterMenuLabel = styled.div`
     letter-spacing: 0.05em;
 `;
 
-export const ClusterMenuRow = styled.div`
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 3px 8px 3px 14px;
-    gap: var(--size-4-2);
-    &:hover {
-        background: var(--color-base-30);
-    }
-`;
-
-export const ClusterMenuRowLabel = styled.span`
-    font-size: var(--font-ui-small);
-    color: var(--text-normal);
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: pointer;
-    &:hover {
-        color: var(--text-accent);
-    }
-`;
-
 export const ClusterMenuReClusterBtn = styled.button`
     && {
         padding: 1px 6px;
@@ -142,8 +118,36 @@ export const ClusterMenuReClusterBtn = styled.button`
         white-space: nowrap;
     }
     &&:hover {
-        border-color: var(--color-accent-1);
-        color: var(--color-accent-1);
+        border-color: #7c3aed;
+        color: #7c3aed;
+    }
+`;
+
+export const ClusterMenuRow = styled.div`
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 8px 3px 14px;
+    gap: var(--size-4-2);
+    &:hover {
+        background: var(--color-base-30);
+    }
+    &:hover ${ClusterMenuReClusterBtn}:not(:hover) {
+        border-color: var(--text-muted);
+    }
+`;
+
+export const ClusterMenuRowLabel = styled.span<{ $isLocked?: boolean }>`
+    font-size: var(--font-ui-small);
+    color: ${({ $isLocked }) => ($isLocked ? "var(--color-orange, #e8a030)" : "var(--text-normal)")};
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: font-size 0.1s ease;
+    &:hover {
+        font-size: calc(var(--font-ui-small) + 0.5px);
     }
 `;
 
@@ -509,6 +513,9 @@ export const GraphStyle: any[] = [
             "border-color": theme.colors["accent-light"],
             "border-width": "3px",
             "background-opacity": 1,
+            width: (node: cytoscape.NodeSingular) =>
+                Math.max(70, 50 + (node.data("memberCount") as number || 1) * 2) + 3 + "px",
+            height: "49px",
         },
     },
     {

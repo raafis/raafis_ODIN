@@ -31,4 +31,5 @@ export interface ClusterClickInfo {
     expand: () => void;
     collapse: () => void;
     alreadyExpanded?: boolean;
+    isDeselect?: boolean;
 }

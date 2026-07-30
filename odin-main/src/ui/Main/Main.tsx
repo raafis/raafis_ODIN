@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Graph from "../Graph/Graph";
 import PromptBar from "../PromptBar/PromptBar";
 import ChatPanel, { ChatEntry } from "../ChatPanel/ChatPanel";
@@ -113,6 +113,10 @@ const Main: React.FC = (): React.JSX.Element => {
 	const activeNodePerFileRef = useRef<Map<string, { nodeId: string; summary: string | null; loading: boolean }>>(new Map());
 	const nodeSummaryCacheRef = useRef<Map<string, string | null>>(new Map());
 	const lastHighlightedEditorRef = useRef<any>(null);
+	const graphRef = useRef<{ clearNodeHighlight: () => void; simulateBackgroundClick: () => void; resizeCy: () => void }>(null);
+	const selectionChangeCleanupRef = useRef<(() => void) | null>(null);
+	const handleActiveNodeIdChangeRef = useRef<(id: string | undefined) => void>(() => {});
+	const clearHighlightRef = useRef<() => void>(() => {});
 	const selectedFileRef = useRef<string>(selectedFile);
 	const abortControllerRef = useRef<AbortController | null>(null);
 	const summaryAbortControllerRef = useRef<AbortController | null>(null);
@@ -134,15 +138,49 @@ const Main: React.FC = (): React.JSX.Element => {
 	const backgroundLoadingNodeId = backgroundLoadingMap.get(selectedFile);
 	const activeNodeIdRef = useRef<string | undefined>(undefined);
 	useEffect(() => { activeNodeIdRef.current = activeNodeId; }, [activeNodeId]);
-
+	const isAnythingHighlightedRef = useRef(false);
+	useEffect(() => {
+		isAnythingHighlightedRef.current =
+			!!activeNodeId ||
+			selectionHighlightedNodeIds.size > 0 ||
+			chatHighlightedNodeIds.size > 0;
+	}, [activeNodeId, selectionHighlightedNodeIds, chatHighlightedNodeIds]);
+	const [sidePanelWidth, setSidePanelWidth] = useState(260);
+	const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+	useLayoutEffect(() => {
+		graphRef.current?.resizeCy();
+	}, [sidePanelWidth]);
 	const root =
 		app?.vault.adapter instanceof FileSystemAdapter
 			? app.vault.adapter.getBasePath().replaceAll("\\", "/")
 			: "/";
 
+	const handleResizeMouseDown = (e: React.MouseEvent) => {
+		e.preventDefault();
+		dragRef.current = { startX: e.clientX, startWidth: sidePanelWidth };
+		document.body.style.userSelect = "none";
+		const onMouseMove = (ev: MouseEvent) => {
+			if (!dragRef.current) return;
+			const delta = dragRef.current.startX - ev.clientX;
+			const newWidth = Math.min(600, Math.max(160, dragRef.current.startWidth + delta));
+			setSidePanelWidth(newWidth);
+		};
+		const onMouseUp = () => {
+			dragRef.current = null;
+			document.body.style.userSelect = "";
+			document.removeEventListener("mousemove", onMouseMove);
+			document.removeEventListener("mouseup", onMouseUp);
+		};
+		document.addEventListener("mousemove", onMouseMove);
+		document.addEventListener("mouseup", onMouseUp);
+	};
+
 	const onNodeClickCallback = async (node: NodeSingular) => {
 		if (node.data().isChatNode) return;
 		if (node.data().id?.startsWith('preview_')) return;
+		selectionChangeCleanupRef.current?.();
+		selectionChangeCleanupRef.current = null;
+		lastHighlightedEditorRef.current = null;
 		clearActiveCluster();
 		const capturedFile = selectedFile;
 		const nodeId = node.data().id;
@@ -185,13 +223,11 @@ const Main: React.FC = (): React.JSX.Element => {
 				.then((data) => {
 					const selections: Selection[] = [];
 					data.forEach((element: Sentence) => {
-						selections.push(
-							getEditorPosition(
-								app?.workspace.activeEditor?.editor?.getValue() ||
-									"",
-								element.content
-							)
+						const pos = getEditorPosition(
+							app?.workspace.activeEditor?.editor?.getValue() || "",
+							element.content
 						);
+						if (pos) selections.push(pos);
 					});
 
 					if (active === selectedFile && !ignoreResults && selections.length > 0) {
@@ -206,6 +242,18 @@ const Main: React.FC = (): React.JSX.Element => {
 					new Notice(Messages.fetchFailed);
 				});
 			setDisabled(false);
+		}
+
+		if (lastHighlightedEditorRef.current) {
+			const highlightedEd = lastHighlightedEditorRef.current;
+			const pollId = window.setInterval(() => {
+				if (!highlightedEd.somethingSelected()) {
+					window.clearInterval(pollId);
+					selectionChangeCleanupRef.current = null;
+					graphRef.current?.simulateBackgroundClick();
+				}
+			}, 200);
+			selectionChangeCleanupRef.current = () => window.clearInterval(pollId);
 		}
 
 		const cacheKey = `${capturedFile}::${nodeId}`;
@@ -396,6 +444,10 @@ const Main: React.FC = (): React.JSX.Element => {
 	};
 
 	const onClusterClickCallback = async (info: ClusterClickInfo) => {
+		if (info.isDeselect) {
+			clearActiveCluster();
+			return;
+		}
 		setActiveCluster(info);
 		setClusterExpanded(info.alreadyExpanded ?? false);
 		setClusterCopied(false);
@@ -411,26 +463,26 @@ const Main: React.FC = (): React.JSX.Element => {
 		setClusterSummaryLoading(clusterLoadingHubIdRef.current === info.hubNodeId && !cached);
 
 		const capturedFile = selectedFile;
-		await app?.workspace.openLinkText("", capturedFile);
+		const hubNodePath = (data.nodes.find(n => n.data.id === info.hubNodeId)?.data.path as string | undefined)
+			?.split(/(\\|\/)/g).pop();
+		await app?.workspace.openLinkText("", hubNodePath ?? capturedFile);
 		const editorContent = app?.workspace.activeEditor?.editor?.getValue() || "";
 		try {
-			const results = await Promise.all(
-				info.memberIds.map(id =>
-					fetchData(
-						"http://localhost:8000/knowledge_base/notes/node_to_sentences",
-						{ repo: { path: root, type: "Notes" }, id }
-					).catch(() => [] as Sentence[])
-				)
-			);
-			const selections: Selection[] = [];
-			(results.flat() as Sentence[]).forEach((element) => {
-				selections.push(getEditorPosition(editorContent, element.content));
-			});
-			if (selections.length > 0) {
+			const results = await fetchData(
+				"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+				{ repo: { path: root, type: "Notes" }, id: info.hubNodeId }
+			).catch(() => [] as Sentence[]);
+			const matched = (results as Sentence[]).filter(el => Boolean(el.content));
+			if (matched.length > 0) {
 				const ed = app?.workspace.activeEditor?.editor;
 				if (ed) {
-					lastHighlightedEditorRef.current = ed;
-					ed.setSelections(selections);
+					const selections = matched
+						.map(el => getEditorPosition(editorContent, el.content))
+						.filter((s): s is Selection => s !== null);
+					if (selections.length > 0) {
+						lastHighlightedEditorRef.current = ed;
+						ed.setSelections(selections);
+					}
 				}
 			}
 		} catch {}
@@ -482,7 +534,9 @@ const Main: React.FC = (): React.JSX.Element => {
 			const shared = (tgtData as Sentence[]).filter((s) => srcContents.has(s.content));
 			const results: Sentence[] = shared.length > 0 ? shared : [...srcData as Sentence[], ...tgtData as Sentence[]];
 
-			const selections: Selection[] = results.map(el => getEditorPosition(editorContent, el.content));
+			const selections: Selection[] = results
+				.map(el => getEditorPosition(editorContent, el.content))
+				.filter((s): s is Selection => s !== null);
 			if (selections.length > 0) {
 				const ed = app?.workspace.activeEditor?.editor;
 				if (ed) {
@@ -518,11 +572,13 @@ const Main: React.FC = (): React.JSX.Element => {
 			}
 		}
 	};
+	handleActiveNodeIdChangeRef.current = handleActiveNodeIdChange;
 
 	const clearHighlight = () => {
+		selectionChangeCleanupRef.current?.();
+		selectionChangeCleanupRef.current = null;
 		const tryDeselect = (ed: any) => {
 			if (!ed) return;
-			try { ed.focus(); } catch {}
 			try {
 				const cm = ed?.cm;
 				if (cm?.state?.selection) {
@@ -547,6 +603,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			}
 		});
 	};
+	clearHighlightRef.current = clearHighlight;
 
 	const updateHasNonTitleContent = async (filePath: string) => {
 		if (!filePath || !app) { setHasNonTitleContent(false); return; }
@@ -803,6 +860,8 @@ const Main: React.FC = (): React.JSX.Element => {
 		});
 		if (fileOpenRef) eventRefs.push(fileOpenRef);
 
+
+
 		const editorChangeRef = app?.workspace.on("editor-change", (editor, info) => {
 			if (!selectedFileRef.current) return;
 			const filePath = (info as any).file?.path;
@@ -874,6 +933,18 @@ const Main: React.FC = (): React.JSX.Element => {
 			});
 		});
 		if (findRef) eventRefs.push(findRef);
+
+		const unhighlightRef = app?.workspace.on("editor-menu", (menu) => {
+			if (!isAnythingHighlightedRef.current) return;
+			menu.addItem((item) => {
+				item.setTitle("Unhighlight nodes in graph")
+					.setIcon("eraser")
+					.onClick(() => {
+						graphRef.current?.simulateBackgroundClick();
+					});
+			});
+		});
+		if (unhighlightRef) eventRefs.push(unhighlightRef);
 
 		let activePath = app?.workspace.activeEditor?.file?.path || "";
 		if (!activePath) {
@@ -1002,6 +1073,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			<S.ContentRow>
 				<S.GraphWrapper>
 					<Graph
+						ref={graphRef}
 						data={displayData}
 						activeNodeId={activeNodeId}
 						onActiveNodeIdChange={handleActiveNodeIdChange}
@@ -1046,7 +1118,8 @@ const Main: React.FC = (): React.JSX.Element => {
 						</S.GenerateButtonOverlay>
 					)}
 				</S.GraphWrapper>
-				<S.SidePanel>
+				<S.SidePanel style={{ width: sidePanelWidth }}>
+					<S.ResizeHandle onMouseDown={handleResizeMouseDown} />
 					<S.SideTabBar>
 						<S.SideTabButton $active={sideTab === "summary"} onClick={() => setSideTab("summary")}>Summary</S.SideTabButton>
 						<S.SideTabButton $active={sideTab === "chat"} onClick={() => setSideTab("chat")}>Chat</S.SideTabButton>
