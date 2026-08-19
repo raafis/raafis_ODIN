@@ -169,6 +169,12 @@ class TextAnalizer:
         "    Always include the unit or contextual word(s) — never a bare number alone:\n"
         "    '300 soldiers' → NODE|Quantity|300 Soldiers  |  '3 percent' → NODE|Quantity|3 Percent\n"
         "    Then connect the Quantity node to the entity it describes using a grounded REL.\n\n"
+        "13. DISAMBIGUATION: If the same common name refers to two or more DIFFERENT real-world entities "
+        "within this passage (e.g. 'Mercury' the planet vs 'Mercury' the chemical element, or 'Python' the language vs 'Python' the snake), "
+        "you MUST give each a distinct qualified name by appending ONE clarifying word directly — no parentheses: "
+        "'Mercury Planet' and 'Mercury Element', not 'Mercury (Planet)' and 'Mercury (Element)'. "
+        "Use these qualified names in ALL REL lines referencing those entities. "
+        "Do NOT qualify entities that are the same thing referred to differently — use ALIAS for those instead.\n\n"
         "EXAMPLE (format only — these placeholder names must NOT appear in your output):\n"
         "NODE|Person|Formal Full Name\n"
         "ALIAS|Formal Full Name|Short Name\n"
@@ -261,7 +267,15 @@ class TextAnalizer:
         return []
 
     @staticmethod
-    def _parse_kg_output(raw: str, repo_path: str, file_path: str, seed_names: set | None = None, text: str = "") -> str:
+    def _section_for_chunk(chunk: str, inherited: str) -> str:
+        for line in chunk.split("\n"):
+            line = line.strip()
+            if line.startswith("#"):
+                return line.lstrip("#").strip()
+        return inherited
+
+    @staticmethod
+    def _parse_kg_output(raw: str, repo_path: str, file_path: str, seed_names: set | None = None, text: str = "", section: str = "", seed_entity_info: dict | None = None) -> str:
         """Convert NODE|Label|Name / REL|From|TYPE|To lines into Cypher MERGE statements."""
         import re as _re
         raw = _re.sub(r"<\|[^|>]+\|>", "", raw)  # strip granite special tokens like <|file_sep|>
@@ -332,6 +346,24 @@ class TextAnalizer:
                         label = "Entity"
                     name = normalize(name)
                     if name and _is_valid_node_name(name):
+                        # Skip re-MERGing a node that already exists from a prior chunk.
+                        # Still register it so REL snapping works, but don't overwrite section/label.
+                        if seed_names and name in seed_names:
+                            should_create_new = False
+                            if seed_entity_info and name in seed_entity_info:
+                                _, _, existing_section = seed_entity_info[name]
+                                if existing_section and section and existing_section != section:
+                                    # Different sections → different entity → auto-qualify using raw label
+                                    raw_label = parts[1].strip()
+                                    qualifier = raw_label.split()[-1].title()
+                                    if qualifier and qualifier.lower() not in name.lower():
+                                        original_name = name
+                                        name = f"{name} {qualifier}"
+                                        defined_names.discard(original_name)
+                                        should_create_new = True
+                            if not should_create_new:
+                                defined_names.add(name)
+                                continue
                         name_lower = name.lower()
                         supersets = [n for n in defined_names if name_lower in n.lower() and name_lower != n.lower()]
                         if supersets:
@@ -356,10 +388,11 @@ class TextAnalizer:
                                 except Exception:
                                     pass
                             sents_cypher = "[" + ", ".join(f"'{safe_sent(s)}'" for s in sents) + "]"
+                            section_set = f" SET n.section = '{safe(section)}'" if section else ""
                             node_lines.append(
                                 f"MERGE (n {{name: '{safe(name)}', "
                                 f"repo_path: '{safe(repo_path)}', file_path: '{safe(file_path)}'}}) "
-                                f"SET n:{label} SET n.source_sentences = {sents_cypher}"
+                                f"SET n:{label} SET n.source_sentences = {sents_cypher}{section_set}"
                             )
             elif line.startswith("ALIAS|"):
                 parts = line.split("|", 2)
@@ -512,10 +545,10 @@ class TextAnalizer:
             "Your first line must start with 'CONTEXT:'. Extract comprehensively — do not stop early."
         ))
 
-    def _invoke_with_retry(self: TextAnalizer, repo_path: str, file_path: str, text: str = "", seed_names: set | None = None, on_partial_node=None) -> str:
+    def _invoke_with_retry(self: TextAnalizer, repo_path: str, file_path: str, text: str = "", seed_names: set | None = None, on_partial_node=None, section: str = "", seed_entity_info: dict | None = None) -> str:
         raw = self._stream_raw(file_path, on_partial_node=on_partial_node, repo_path=repo_path, node_file_path=file_path)
         print(f"KG raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
-        result = self._parse_kg_output(raw, repo_path, file_path, seed_names, text=text)
+        result = self._parse_kg_output(raw, repo_path, file_path, seed_names, text=text, section=section, seed_entity_info=seed_entity_info)
         if not result:
             if text:
                 # Fresh retry: discard the wrong response, re-frame the passage explicitly
@@ -527,7 +560,7 @@ class TextAnalizer:
                 self.messages += [AIMessage(content=raw), HumanMessage(content=self._RETRY_MSG)]
             raw = self._stream_raw(file_path)
             print(f"KG retry raw ({len(raw)}c): {repr(raw[:400])}", flush=True)
-            result = self._parse_kg_output(raw, repo_path, file_path, seed_names, text=text)
+            result = self._parse_kg_output(raw, repo_path, file_path, seed_names, text=text, section=section, seed_entity_info=seed_entity_info)
         return result
 
     @staticmethod
@@ -545,14 +578,41 @@ class TextAnalizer:
             chunks.append("\n\n".join(current))
         return chunks or [text]
 
-    def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str, on_partial_node=None) -> str:
+    @staticmethod
+    def _split_into_chunks_with_sections(text: str, max_chars: int = 1500) -> list:
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        result = []
+        current_paras, current_len = [], 0
+        active_section = ""
+        pending_section = ""
+
+        for para in paragraphs:
+            if para.startswith("#"):
+                pending_section = para.lstrip("#").strip()
+                if current_paras:            # flush before new section starts
+                    result.append(("\n\n".join(current_paras), active_section))
+                    current_paras, current_len = [], 0
+                    active_section = pending_section
+            if current_len + len(para) > max_chars and current_paras:
+                result.append(("\n\n".join(current_paras), active_section))
+                current_paras, current_len = [para], len(para)
+                active_section = pending_section
+            else:
+                current_paras.append(para)
+                current_len += len(para) + 2
+
+        if current_paras:
+            result.append(("\n\n".join(current_paras), active_section))
+        return result or [(text, "")]
+
+    def text_to_cypher_create(self: TextAnalizer, text: str, repo_path: str, file_path: str, on_partial_node=None, section: str = "") -> str:
         if not text.strip():
             return ""
         self.messages = [
             SystemMessage(content=self._KG_SYSTEM),
             self._passage_human_message(text),
         ]
-        return self._invoke_with_retry(repo_path, file_path, text, on_partial_node=on_partial_node)
+        return self._invoke_with_retry(repo_path, file_path, text, on_partial_node=on_partial_node, section=section)
 
     def data_and_text_to_cypher_update(self: TextAnalizer, data: str, text: str, repo_path: str, file_path: str) -> str:
         self.messages = [
@@ -583,6 +643,25 @@ class TextAnalizer:
     def _names_from_cypher(cypher: str) -> list:
         import re as _re
         return list(dict.fromkeys(_re.findall(r"name:\s*'([^']+)'", cypher)))
+
+    @staticmethod
+    def _entities_from_cypher(cypher: str) -> dict:
+        import re as _re
+        result = {}
+        for block in _re.split(r'(?=MERGE\s*\()', cypher):
+            name_m = _re.search(r"name:\s*'([^']+)'", block)
+            label_m = _re.search(r"SET n:(\w+)", block)
+            sent_m = _re.search(r"n\.source_sentences\s*=\s*\[([^\]]+)\]", block)
+            if name_m and label_m:
+                first_sentence = ""
+                if sent_m:
+                    sq = _re.search(r"'([^']+)'", sent_m.group(1))
+                    if sq:
+                        first_sentence = sq.group(1)[:120]
+                section_m = _re.search(r"SET n\.section\s*=\s*'([^']+)'", block)
+                node_section = section_m.group(1) if section_m else ""
+                result[name_m.group(1)] = (label_m.group(1), first_sentence, node_section)
+        return result
 
     @staticmethod
     def _orphan_names(accumulated: str) -> list:
@@ -805,19 +884,21 @@ class TextAnalizer:
         return "\n".join(lines)
 
     def text_to_cypher_chunked(self: TextAnalizer, text: str, repo_path: str, file_path: str, on_chunk=None) -> str:
-        chunks = self._split_into_chunks(text)
+        chunks_with_sections = self._split_into_chunks_with_sections(text)
+        chunks = [c for c, _ in chunks_with_sections]
         total = len(chunks)
         my_gen_id = uuid.uuid4().hex
         _generation_progress[file_path] = {"current": 0, "total": total, "chunk_tokens": 0, "gen_id": my_gen_id}
         print(f"Chunked extraction: {total} chunks for {file_path}", flush=True)
 
         try:
+            chunk0_section = self._section_for_chunk(chunks[0], "")
             if total == 1:
-                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path, on_partial_node=on_chunk)
+                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path, on_partial_node=on_chunk, section=chunk0_section)
                 if on_chunk and accumulated.strip():
                     on_chunk(accumulated)
             else:
-                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path, on_partial_node=on_chunk)
+                accumulated = self.text_to_cypher_create(chunks[0], repo_path, file_path, on_partial_node=on_chunk, section=chunk0_section)
                 if on_chunk and accumulated.strip():
                     on_chunk(accumulated)
                 context_history = [self._extract_context_line(self._last_raw)]
@@ -830,16 +911,35 @@ class TextAnalizer:
                         return ""
                     print(f"Chunk {i}/{total}", flush=True)
                     existing_names = self._names_from_cypher(accumulated)
-                    names_context = "\n".join(f"- {n}" for n in existing_names)
+                    entity_meta = self._entities_from_cypher(accumulated)
+                    _lines = []
+                    for _n in existing_names:
+                        _label, _sentence, _ = entity_meta.get(_n, ("Entity", "", ""))
+                        _hint = f' — "{_sentence}"' if _sentence else ""
+                        _lines.append(f"- {_n} [{_label}]{_hint}")
+                    names_context = "\n".join(_lines)
                     prior_context = "\n".join(context_history) if context_history else ""
+                    _, inherited_section = chunks_with_sections[i - 1]
+                    chunk_has_heading = any(line.startswith("#") for line in chunk.split("\n"))
+                    section_line = f"SECTION: {inherited_section}\n\n" if inherited_section and not chunk_has_heading else ""
+                    chunk_section = self._section_for_chunk(chunk, inherited_section)
                     self.messages = [
                         SystemMessage(content=self._KG_SYSTEM),
                         HumanMessage(content=(
                             (f"Context from earlier sections of this note:\n{prior_context}\n\n" if prior_context else "")
-                            + f"These nodes are ALREADY in the graph — do NOT re-output them as NODE lines "
-                            f"(unless you need them in a REL, in which case you MUST also output their NODE line). "
-                            f"For ALL NEW entities in this chunk that are not in this list, output NODE lines as usual:\n{names_context}\n\n"
-                            "The text below is source material, NOT a question to answer. "
+                            + "The following nodes are ALREADY in the graph.\n"
+                            "CRITICAL: nodes are identified by NAME only — labels do NOT create separate nodes. "
+                            "NODE|Element|Mercury and NODE|Planet|Mercury both point to the SAME 'Mercury' node. "
+                            "A different label does NOT make a different node.\n\n"
+                            "For every entity you encounter in this passage, decide:\n"
+                            "  SAME ENTITY (identical real-world thing) → do NOT output a NODE line; use its exact name in REL lines.\n"
+                            "  DIFFERENT ENTITY (shares a name but is a different real-world thing) → "
+                            "you MUST give it a NEW qualified name: append ONE word describing what THIS entity IS (not the existing one). "
+                            "Example: existing 'Mercury [Entity]' = the planet; this passage's mercury = chemical element → use 'Mercury Element'. "
+                            "No parentheses. Use the qualified name in ALL REL lines for that entity.\n\n"
+                            f"Existing nodes:\n{names_context}\n\n"
+                            + section_line
+                            + "The text below is source material, NOT a question to answer. "
                             "Extract entities and relationships from it.\n\n"
                             "PASSAGE:\n"
                             "---\n"
@@ -849,7 +949,7 @@ class TextAnalizer:
                             "Your first line must start with 'CONTEXT:'. Extract comprehensively — do not stop early."
                         ))
                     ]
-                    update = self._invoke_with_retry(repo_path, file_path, chunk, seed_names=set(existing_names), on_partial_node=on_chunk)
+                    update = self._invoke_with_retry(repo_path, file_path, chunk, seed_names=set(existing_names), on_partial_node=on_chunk, section=chunk_section, seed_entity_info=entity_meta)
                     ctx = self._extract_context_line(self._last_raw)
                     if ctx:
                         context_history.append(ctx)

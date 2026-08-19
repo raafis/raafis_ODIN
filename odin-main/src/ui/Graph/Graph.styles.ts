@@ -583,4 +583,52 @@ export const GraphStyle: any[] = [
             width: 1.5,
         },
     },
+    {
+        selector: "node.cluster-node.hover-neighbor-outgoing, node.cluster-node.active-neighbor-outgoing",
+        style: {
+            "border-width": "3px",
+            "border-color": theme.colors["accent-light"],
+            "background-opacity": 1,
+        },
+    },
+    {
+        selector: "node.cluster-node.hover-neighbor-incoming, node.cluster-node.active-neighbor-incoming",
+        style: {
+            "border-width": "3px",
+            "border-color": "white",
+            "background-opacity": 1,
+        },
+    },
+    {
+        selector: 'edge[id^="cluster_e_"].hovered, edge.proxy-cluster-edge.hovered',
+        style: {
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
+            opacity: 0.85,
+        },
+    },
+    {
+        selector: 'edge[id^="cluster_e_"].hovered-incoming, edge.proxy-cluster-edge.hovered-incoming',
+        style: {
+            "line-color": "white",
+            "target-arrow-color": "white",
+            opacity: 0.85,
+        },
+    },
+    {
+        selector: 'edge[id^="cluster_e_"].edge-active, edge.proxy-cluster-edge.edge-active',
+        style: {
+            "line-color": theme.colors["accent-light"],
+            "target-arrow-color": theme.colors["accent-light"],
+            opacity: 0.85,
+        },
+    },
+    {
+        selector: 'edge[id^="cluster_e_"].edge-active-incoming, edge.proxy-cluster-edge.edge-active-incoming',
+        style: {
+            "line-color": "white",
+            "target-arrow-color": "white",
+            opacity: 0.85,
+        },
+    },
 ]

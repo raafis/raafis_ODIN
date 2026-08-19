@@ -36,6 +36,7 @@ export const fetchGraphData = async (root: string, selectedFile: string, ignoreR
                                     selected: suggested.contains(element.id),
                                     path: fileName,
                                     group: (element as GraphNode).labels?.[0],
+                                section: (element as GraphNode).properties?.section || "",
                                 },
                             });
                         } else if (element.type === "relationship" && "label" in element) {

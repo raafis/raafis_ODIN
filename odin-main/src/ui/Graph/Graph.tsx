@@ -2,7 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } f
 import cytoscape, { EdgeSingular, NodeSingular } from "cytoscape";
 import coseBilkent from "cytoscape-cose-bilkent";
 cytoscape.use(coseBilkent);
-import { GraphContainer, GraphOuter, GraphStyle, ClusterToggleButton, ClusterIcon, CollapseAllButton, ClusterMenuDropdown, ClusterMenuLabel, ClusterMenuRow, ClusterMenuRowLabel, ClusterMenuReClusterBtn, ClusterMenuSeparator, ClusterMenuActionBtn } from "./Graph.styles";
+import { GraphContainer, GraphOuter, GraphStyle, ClusterToggleButton, ClusterIcon, CollapseAllButton, ClusterMenuDropdown, ClusterMenuLabel, ClusterMenuRow, ClusterMenuRowLabel, ClusterMenuReClusterBtn } from "./Graph.styles";
 import { Node, Edge, ClusterClickInfo } from "../../shared/types/graphTypes";
 import { LAYOUT_OPTIONS } from "../../shared/constants";
 import { useApp } from "../hooks/useApp";
@@ -62,6 +62,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	const [expandedClusterList, setExpandedClusterList] = useState<{ communityId: string; label: string }[]>([]);
 	const [showClusterMenu, setShowClusterMenu] = useState(false);
 	const [lockedHighlightId, setLockedHighlightId] = useState<string | null>(null);
+	const [clusterHighlightTick, setClusterHighlightTick] = useState(0);
 	const clusterMenuRef = useRef<HTMLDivElement | null>(null);
 
 	const activeNodeIdRef = useRef<string | undefined>(undefined);
@@ -70,7 +71,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		clearNodeHighlight: () => {
 			if (!cyRef.current) return;
 			cyRef.current.edges().removeClass("edge-active edge-active-incoming");
-			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
+			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming cluster-hover-highlight");
 			cyRef.current.elements().removeClass("dimmed");
 			cyRef.current.nodes().deselect();
 		},
@@ -83,6 +84,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			cyRef.current?.edges().removeClass("edge-active edge-active-incoming");
 			cyRef.current?.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
 			cyRef.current?.elements().removeClass("dimmed");
+			cyRef.current?.nodes().removeClass("cluster-hover-highlight");
 			cyRef.current?.edges().deselect();
 			cyRef.current?.nodes().deselect();
 			onActiveNodeIdChangeRef.current?.(undefined);
@@ -117,11 +119,20 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	const nodeToClusterRef = useRef<Map<string, string>>(new Map());
 	const selectedClusterIdRef = useRef<string | null>(null);
 	const lockedHighlightIdRef = useRef<string | null>(null);
+	const menuWasOpenRef = useRef(false);
 	const onClusterClickRef = useRef<((info: ClusterClickInfo) => void) | undefined>(undefined);
 	const onClusterCollapsedRef = useRef<((communityId: string) => void) | undefined>(undefined);
 	const onClusterModeChangeRef = useRef<((isActive: boolean) => void) | undefined>(undefined);
+	const activeClusterHighlightRef = useRef<string | null>(null);
 
-	useEffect(() => { filePathRef.current = filePath; }, [filePath]);
+	useEffect(() => {
+		// Save the current viewport for the OLD file before the ref updates.
+		if (filePathRef.current && cyRef.current) {
+			const vp = { pan: cyRef.current.pan(), zoom: cyRef.current.zoom() };
+			localStorage.setItem(`odin_viewport_${filePathRef.current}`, JSON.stringify(vp));
+		}
+		filePathRef.current = filePath;
+	}, [filePath]);
 	useEffect(() => { cachedNodeIdsRef.current = cachedNodeIds ?? new Set(); }, [cachedNodeIds]);
 	useEffect(() => { loadingClusterHubIdRef.current = loadingClusterHubId; }, [loadingClusterHubId]);
 	useEffect(() => { edgeClickCallbackRef.current = edgeClickCallback; });
@@ -135,7 +146,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	app?.workspace.onLayoutReady(() => {
 		app.workspace.on("resize", () => {
 			if (cyRef.current) {
-				cyRef.current.fit(undefined, 30);
+				cyRef.current.resize();
 			}
 		});
 	});
@@ -195,6 +206,72 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				nodeIds.push(id);
 		});
 		const nodeIdSet = new Set(nodeIds);
+
+		// Use section-based grouping when nodes carry a section property
+		const hasSections = nodeIds.some(id => {
+			const s = cyRef.current!.$id(id).data("section") as string;
+			return s && s.trim().length > 0;
+		});
+
+		if (hasSections) {
+			const sectionMap = new Map<string, string[]>();
+			const noSection: string[] = [];
+			nodeIds.forEach(id => {
+				const sec = (cyRef.current!.$id(id).data("section") as string) || "";
+				if (sec.trim()) {
+					if (!sectionMap.has(sec)) sectionMap.set(sec, []);
+					sectionMap.get(sec)!.push(id);
+				} else {
+					noSection.push(id);
+				}
+			});
+
+			const groups = new Map<string, ClusterEntry>();
+			sectionMap.forEach((memberIds, sec) => {
+				let cx = 0, cySum = 0, bestDegree = -1, hubNodeId = memberIds[0];
+				memberIds.forEach(id => {
+					const node = cyRef.current!.$id(id);
+					const pos = node.position();
+					cx += pos.x;
+					cySum += pos.y;
+					const deg = node.degree(false);
+					if (deg > bestDegree) { bestDegree = deg; hubNodeId = id; }
+				});
+				const communityId = sec.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_]/g, "");
+				groups.set(communityId, {
+					nodeIds: memberIds,
+					centroid: { x: cx / memberIds.length, y: cySum / memberIds.length },
+					label: sec,
+					hubNodeId,
+				});
+			});
+			// Nodes without a section: absorb into the section cluster they share most edges with
+			noSection.forEach(id => {
+				const sectionCounts = new Map<string, number>();
+				cyRef.current!.$id(id).connectedEdges().forEach(edge => {
+					const otherId = edge.source().id() === id ? edge.target().id() : edge.source().id();
+					for (const [commId, entry] of groups) {
+						if (entry.nodeIds.includes(otherId)) {
+							sectionCounts.set(commId, (sectionCounts.get(commId) ?? 0) + 1);
+							break;
+						}
+					}
+				});
+				if (sectionCounts.size > 0) {
+					let bestComm = "", bestCount = 0;
+					sectionCounts.forEach((cnt, comm) => { if (cnt > bestCount) { bestCount = cnt; bestComm = comm; } });
+					groups.get(bestComm)!.nodeIds.push(id);
+				} else {
+					const node = cyRef.current!.$id(id);
+					const pos = node.position();
+					groups.set(id, { nodeIds: [id], centroid: { x: pos.x, y: pos.y }, label: (node.data("fullLabel") as string) || id, hubNodeId: id });
+				}
+			});
+			clusterGroupsRef.current = groups;
+			return;
+		}
+
+		// Fallback: topology-based label propagation
 		const edgeList: Array<{ source: string; target: string }> = [];
 		cyRef.current.edges().forEach(edge => {
 			if (edge.hasClass("chat-node-edge") || edge.id().startsWith("preview_e_")) return;
@@ -570,8 +647,28 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		const entry = clusterGroupsRef.current.get(communityId);
 		if (!entry) return;
 		const memberIds = new Set(entry.nodeIds);
+
+		// Include shared hub nodes: non-members connected to ≥50% of cluster members.
+		// This handles the case where a cluster's nodes all connect through an external hub
+		// (e.g. Part Two chemistry nodes connecting through the "Mercury" planet hub before
+		// disambiguation creates a dedicated "Mercury Element" node).
+		const hubCounts = new Map<string, number>();
+		cyRef.current.edges().forEach(edge => {
+			const srcId = edge.source().id();
+			const tgtId = edge.target().id();
+			if (memberIds.has(srcId) && !memberIds.has(tgtId))
+				hubCounts.set(tgtId, (hubCounts.get(tgtId) ?? 0) + 1);
+			else if (memberIds.has(tgtId) && !memberIds.has(srcId))
+				hubCounts.set(srcId, (hubCounts.get(srcId) ?? 0) + 1);
+		});
+		const hubThreshold = Math.max(2, Math.ceil(entry.nodeIds.length * 0.5));
+		hubCounts.forEach((count, nodeId) => {
+			if (count >= hubThreshold) memberIds.add(nodeId);
+		});
+
 		cyRef.current.batch(() => {
 			cyRef.current!.elements().removeClass("dimmed");
+			cyRef.current!.nodes().removeClass("cluster-hover-highlight");
 			entry.nodeIds.forEach(id => {
 				const node = cyRef.current!.$id(id);
 				if (node.length) node.addClass("cluster-hover-highlight");
@@ -581,9 +678,35 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					if (!memberIds.has(el.id())) el.addClass("dimmed");
 				} else {
 					const edge = el as cytoscape.EdgeSingular;
-					if (!memberIds.has(edge.source().id()) && !memberIds.has(edge.target().id())) {
+					if (!memberIds.has(edge.source().id()) || !memberIds.has(edge.target().id())) {
 						edge.addClass("dimmed");
 					}
+				}
+			});
+		});
+	};
+
+	const highlightClusterBubbleNeighbors = (communityId: string) => {
+		if (!cyRef.current) return;
+		const bubbleId = `cluster_${communityId}`;
+		const bubbleNode = cyRef.current.$id(bubbleId);
+		if (!bubbleNode.length) return;
+		const connectedEdges = bubbleNode.connectedEdges();
+		const connectedNodes = connectedEdges.connectedNodes().not(bubbleNode);
+		cyRef.current.batch(() => {
+			cyRef.current!.elements().removeClass("dimmed");
+			cyRef.current!.nodes().removeClass("cluster-hover-highlight");
+			cyRef.current!.nodes().removeClass("hover-neighbor-outgoing hover-neighbor-incoming");
+			cyRef.current!.edges().removeClass("hovered hovered-incoming");
+			bubbleNode.outgoers("node").addClass("hover-neighbor-outgoing");
+			bubbleNode.incomers("node").addClass("hover-neighbor-incoming");
+			bubbleNode.outgoers("edge").addClass("hovered");
+			bubbleNode.incomers("edge").addClass("hovered-incoming");
+			cyRef.current!.elements().forEach(el => {
+				if (el.isNode()) {
+					if (el.id() !== bubbleId && !connectedNodes.has(el)) el.addClass("dimmed");
+				} else {
+					if (!connectedEdges.has(el)) el.addClass("dimmed");
 				}
 			});
 		});
@@ -594,6 +717,9 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		cyRef.current.batch(() => {
 			cyRef.current!.nodes().removeClass("cluster-hover-highlight");
 			cyRef.current!.elements().removeClass("dimmed");
+			cyRef.current!.nodes().removeClass("cluster-hover-highlight");
+			cyRef.current!.nodes().removeClass("hover-neighbor-outgoing hover-neighbor-incoming");
+			cyRef.current!.edges().removeClass("hovered hovered-incoming");
 			const activeId = activeNodeIdRef.current;
 			if (activeId) {
 				const activeNode = cyRef.current!.$id(activeId);
@@ -617,6 +743,15 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		});
 		setExpandedClusterList(list);
 		setExpandedCount(expandedGroupsRef.current.size);
+		const fp = filePathRef.current;
+		if (fp) {
+			const expanded = [...expandedGroupsRef.current];
+			if (expanded.length > 0) {
+				localStorage.setItem(`odin_expanded_clusters_${fp}`, JSON.stringify(expanded));
+			} else {
+				localStorage.removeItem(`odin_expanded_clusters_${fp}`);
+			}
+		}
 	};
 
 	// Auto-close menu when all expanded clusters are re-clustered
@@ -629,6 +764,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		if (!showClusterMenu) return;
 		const handler = (e: MouseEvent) => {
 			if (clusterMenuRef.current && !clusterMenuRef.current.contains(e.target as globalThis.Node)) {
+				menuWasOpenRef.current = true;
 				setShowClusterMenu(false);
 			}
 		};
@@ -642,6 +778,17 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 
 	const collapseAll = () => {
 		enterClustered();
+		if (filePathRef.current) {
+			localStorage.removeItem(`odin_expanded_clusters_${filePathRef.current}`);
+		}
+	};
+
+	const expandAllClusters = () => {
+		clusterGroupsRef.current.forEach((_entry, communityId) => {
+			if (!expandedGroupsRef.current.has(communityId)) {
+				expandCluster(communityId);
+			}
+		});
 	};
 
 	const exitClustered = () => {
@@ -658,6 +805,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		setLockedHighlightId(null);
 		if (filePathRef.current) {
 			localStorage.removeItem(`odin_cluster_mode_${filePathRef.current}`);
+			localStorage.removeItem(`odin_expanded_clusters_${filePathRef.current}`);
 		}
 		isModeClusteredRef.current = false;
 		setIsClustered(false);
@@ -672,7 +820,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			if (expandedGroupsRef.current.size > 0) {
 				setShowClusterMenu(prev => !prev);
 			} else {
-				exitClustered();
+				expandAllClusters();
 			}
 		} else {
 			enterClustered();
@@ -686,6 +834,9 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			const nodeData = event.target.data();
 			if (nodeData.isCluster) {
 				const communityId = nodeData.group as string;
+				const isDeselect = selectedClusterIdRef.current === communityId;
+				activeClusterHighlightRef.current = isDeselect ? null : communityId;
+				setClusterHighlightTick(t => t + 1);
 				onClusterClickRef.current?.({
 					communityId,
 					memberIds: (nodeData.memberIds as string[]) ?? clusterGroupsRef.current.get(communityId)?.nodeIds ?? [],
@@ -693,7 +844,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					hubNodeId: nodeData.hubNodeId as string,
 					expand: () => expandClusterRef.current(communityId),
 					collapse: () => collapseClusterRef.current(communityId),
-					isDeselect: selectedClusterIdRef.current === communityId,
+					isDeselect,
 				});
 				const clickedBubble = event.target as cytoscape.NodeSingular;
 				if (selectedClusterIdRef.current && selectedClusterIdRef.current !== communityId) {
@@ -701,6 +852,11 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				}
 				clickedBubble.toggleClass("cluster-selected");
 				selectedClusterIdRef.current = clickedBubble.hasClass("cluster-selected") ? communityId : null;
+				if (!isDeselect) {
+					highlightClusterBubbleNeighbors(communityId);
+				} else {
+					clearClusterHighlight();
+				}
 				return;
 			}
 			// If in cluster mode, check if this node belongs to an expanded cluster
@@ -708,6 +864,8 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				const clickedId = (event.target as cytoscape.NodeSingular).id();
 				for (const [communityId, entry] of clusterGroupsRef.current) {
 					if (expandedGroupsRef.current.has(communityId) && entry.nodeIds.includes(clickedId)) {
+						activeClusterHighlightRef.current = communityId;
+						setClusterHighlightTick(t => t + 1);
 						onClusterClickRef.current?.({
 							communityId,
 							memberIds: entry.nodeIds,
@@ -726,6 +884,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				setSelected(path);
 				app?.workspace.openLinkText("", path);
 			}
+			activeClusterHighlightRef.current = null;
 			onActiveNodeIdChangeRef.current?.(event.target.id());
 		};
 		cyRef.current?.on("click", "node", handleNodeClick);
@@ -737,7 +896,12 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			const node = event.target;
 			node.addClass("hovered");
 			if (node.data("isCluster")) {
-				node.connectedEdges().addClass("hovered");
+				node.outgoers("edge").addClass("hovered");
+				node.incomers("edge").addClass("hovered-incoming");
+				node.outgoers("node").addClass("hover-neighbor-outgoing");
+				node.incomers("node").addClass("hover-neighbor-incoming");
+				const excluded = node.union(node.connectedEdges()).union(node.outgoers("node")).union(node.incomers("node"));
+				cyRef.current?.elements().not(excluded).addClass("dimmed");
 				return;
 			}
 			node.outgoers("edge").addClass("hovered");
@@ -759,7 +923,25 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			const node = event.target;
 			node.removeClass("hovered");
 			if (node.data("isCluster")) {
-				node.connectedEdges().removeClass("hovered");
+				node.outgoers("edge").removeClass("hovered");
+				node.incomers("edge").removeClass("hovered-incoming");
+				node.outgoers("node").removeClass("hover-neighbor-outgoing");
+				node.incomers("node").removeClass("hover-neighbor-incoming");
+				cyRef.current?.elements().removeClass("dimmed");
+				cyRef.current?.nodes().removeClass("cluster-hover-highlight");
+				if (lockedHighlightIdRef.current) {
+					highlightClusterMembers(lockedHighlightIdRef.current);
+				} else if (activeNodeIdRef.current) {
+					const activeNode = cyRef.current?.$id(activeNodeIdRef.current);
+					if (activeNode?.length && !activeNode.hidden()) {
+						cyRef.current?.elements()
+							.not(activeNode).not(activeNode.connectedEdges())
+							.not(activeNode.outgoers("node")).not(activeNode.incomers("node"))
+							.addClass("dimmed");
+					}
+				} else if (selectedClusterIdRef.current) {
+					highlightClusterBubbleNeighbors(selectedClusterIdRef.current);
+				}
 				return;
 			}
 			node.outgoers("edge").removeClass("hovered");
@@ -767,8 +949,11 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			node.outgoers("node").removeClass("hover-neighbor-outgoing");
 			node.incomers("node").removeClass("hover-neighbor-incoming");
 			cyRef.current?.elements().removeClass("dimmed");
+			cyRef.current?.nodes().removeClass("cluster-hover-highlight");
 			const currentActiveId = activeNodeIdRef.current;
-			if (currentActiveId) {
+			if (lockedHighlightIdRef.current) {
+				highlightClusterMembers(lockedHighlightIdRef.current);
+			} else if (currentActiveId) {
 				const activeNode = cyRef.current?.$id(currentActiveId);
 				if (activeNode?.length && !activeNode.hidden()) {
 					cyRef.current?.elements()
@@ -778,6 +963,8 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 						.not(activeNode.incomers("node"))
 						.addClass("dimmed");
 				}
+			} else if (selectedClusterIdRef.current) {
+				highlightClusterBubbleNeighbors(selectedClusterIdRef.current);
 			}
 		});
 		cyRef.current?.on("mouseover", "edge", (event) => {
@@ -786,7 +973,16 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		});
 		cyRef.current?.on("mouseout", "edge", (event) => {
 			const c2 = cyRef.current?.container(); if (c2) c2.style.cursor = "";
-			event.target.removeClass("hovered");
+			const edge = event.target as cytoscape.EdgeSingular;
+			edge.removeClass("hovered hovered-incoming");
+			if (selectedClusterIdRef.current) {
+				const bubbleId = `cluster_${selectedClusterIdRef.current}`;
+				const bubbleNode = cyRef.current?.$id(bubbleId);
+				if (bubbleNode?.length) {
+					if (bubbleNode.outgoers("edge").has(edge)) edge.addClass("hovered");
+					else if (bubbleNode.incomers("edge").has(edge)) edge.addClass("hovered-incoming");
+				}
+			}
 		});
 	};
 
@@ -803,7 +999,18 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			if (event.target === cyRef.current) {
 				if (!mouseDownOnCanvas) return;
 				mouseDownOnCanvas = false;
+				if (menuWasOpenRef.current) {
+					menuWasOpenRef.current = false;
+					return;
+				}
 				cyRef.current?.edges().deselect();
+				activeClusterHighlightRef.current = null;
+				lockedHighlightIdRef.current = null;
+				setLockedHighlightId(null);
+				cyRef.current?.nodes().removeClass("cluster-hover-highlight");
+				cyRef.current?.elements().removeClass("dimmed");
+				cyRef.current?.nodes().removeClass("hover-neighbor-outgoing hover-neighbor-incoming");
+				cyRef.current?.edges().removeClass("hovered hovered-incoming");
 				onActiveNodeIdChangeRef.current?.(undefined);
 				onBackgroundClickRef.current?.();
 				if (selectedClusterIdRef.current) {
@@ -938,9 +1145,27 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				const hasRealNodes = data.nodes.some(n => !(n.data.id as string).startsWith("preview_"));
 				if (fp && hasRealNodes && localStorage.getItem(`odin_cluster_mode_${fp}`) === "true") {
 					enterClustered();
+					const savedExpanded = localStorage.getItem(`odin_expanded_clusters_${fp}`);
+					if (savedExpanded) {
+						try {
+							const expandedIds: string[] = JSON.parse(savedExpanded);
+							expandedIds.forEach(communityId => expandCluster(communityId));
+						} catch { /* ignore corrupt data */ }
+					}
 				}
 			}
 			cyRef.current?.resize();
+
+			// Restore saved viewport for this file (overrides the fit: true from preset layout).
+			const currentFp = filePathRef.current;
+			const savedVp = currentFp ? localStorage.getItem(`odin_viewport_${currentFp}`) : null;
+			if (savedVp && cyRef.current) {
+				try {
+					const { pan, zoom } = JSON.parse(savedVp);
+					cyRef.current.zoom(zoom);
+					cyRef.current.pan(pan);
+				} catch { /* ignore corrupt data */ }
+			}
 		};
 
 		refreshGraph();
@@ -1042,7 +1267,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	useEffect(() => {
 		if (cyRef.current) {
 			cyRef.current.edges().removeClass("edge-active edge-active-incoming");
-			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
+			cyRef.current.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming cluster-hover-highlight");
 			cyRef.current.elements().removeClass("dimmed");
 			if (activeNodeId) {
 				cyRef.current.edges().removeClass("chat-front");
@@ -1062,12 +1287,19 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 						.not(activeNode.incomers("node"))
 						.addClass("dimmed");
 				}
+			} else if (activeClusterHighlightRef.current) {
+				const cId = activeClusterHighlightRef.current;
+				if (expandedGroupsRef.current.has(cId)) {
+					highlightClusterMembers(cId);
+				} else if (cyRef.current.$id(`cluster_${cId}`).length) {
+					highlightClusterBubbleNeighbors(cId);
+				}
 			} else {
 				activeNodeIdRef.current = undefined;
 				cyRef.current.nodes().deselect();
 			}
 		}
-	}, [activeNodeId, data]);
+	}, [activeNodeId, data, clusterHighlightTick]);
 
 	const canCluster = data.nodes.length > 0 &&
 		!data.nodes.every(n => n.data.id.startsWith("preview_")) &&
@@ -1081,8 +1313,8 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					onClick={handleClusterToggle}
 					$active={isClustered}
 					title={isClustered
-						? (expandedCount > 0 ? "Manage expanded clusters" : "Exit cluster view")
-						: "Cluster nodes by type"}
+					? (expandedCount > 0 ? "Manage clusters" : "Expand all clusters")
+					: "Cluster nodes by type"}
 				>
 					<ClusterIcon />
 				</ClusterToggleButton>
@@ -1125,15 +1357,8 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 									</ClusterMenuReClusterBtn>
 								</ClusterMenuRow>
 							))}
-							<ClusterMenuSeparator />
 						</>
 					)}
-					<ClusterMenuActionBtn onClick={() => { collapseAll(); setShowClusterMenu(false); }}>
-						Collapse All
-					</ClusterMenuActionBtn>
-					<ClusterMenuActionBtn onClick={() => { exitClustered(); setShowClusterMenu(false); }}>
-						Exit Cluster Mode
-					</ClusterMenuActionBtn>
 				</ClusterMenuDropdown>
 			)}
 		</GraphOuter>

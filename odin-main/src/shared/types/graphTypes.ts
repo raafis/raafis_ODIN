@@ -8,6 +8,7 @@ export interface Node {
         path?: string;
         isChatNode?: boolean;
         group?: string;
+        section?: string;
     };
     classes?: string;
 }
