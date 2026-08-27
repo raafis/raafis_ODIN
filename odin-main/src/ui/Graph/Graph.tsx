@@ -28,8 +28,10 @@ interface GraphProps {
 	onClusterModeChange?: (isActive: boolean) => void;
 	activeNodeId?: string;
 	cachedNodeIds?: Set<string>;
+	cachedClusterHubIds?: Set<string>;
 	loadingNodeId?: string;
 	loadingClusterHubId?: string;
+	lastCachedClusterHubId?: string;
 	chatHighlightedNodeIds?: Set<string>;
 	selectionHighlightedNodeIds?: Set<string>;
 	visible: boolean;
@@ -48,8 +50,10 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	onClusterModeChange,
 	activeNodeId,
 	cachedNodeIds,
+	cachedClusterHubIds,
 	loadingNodeId,
 	loadingClusterHubId,
+	lastCachedClusterHubId,
 	chatHighlightedNodeIds,
 	selectionHighlightedNodeIds,
 	visible,
@@ -59,9 +63,10 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	const [selected, setSelected] = useState<string | undefined>(undefined);
 	const [isClustered, setIsClustered] = useState(false);
 	const [expandedCount, setExpandedCount] = useState(0);
-	const [expandedClusterList, setExpandedClusterList] = useState<{ communityId: string; label: string }[]>([]);
+	const [expandedClusterList, setExpandedClusterList] = useState<{ communityId: string; label: string; nodeCount: number }[]>([]);
 	const [showClusterMenu, setShowClusterMenu] = useState(false);
 	const [lockedHighlightId, setLockedHighlightId] = useState<string | null>(null);
+	const [activeClusterHighlightId, setActiveClusterHighlightId] = useState<string | null>(null);
 	const [clusterHighlightTick, setClusterHighlightTick] = useState(0);
 	const clusterMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -102,11 +107,13 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	const positionCacheRef = useRef<Map<string, Record<string, { x: number; y: number }>>>(new Map());
 	const filePathRef = useRef<string>(filePath);
 	const cachedNodeIdsRef = useRef<Set<string>>(new Set());
+	const cachedClusterHubIdsRef = useRef<Set<string>>(new Set());
 	const loadingClusterHubIdRef = useRef<string | undefined>(undefined);
 	const cacheKeyRef = useRef<string>("");
 	const edgeClickCallbackRef = useRef(edgeClickCallback);
 	const onBackgroundClickRef = useRef(onBackgroundClick);
 	const onActiveNodeIdChangeRef = useRef(onActiveNodeIdChange);
+	const nodeClickCallbackRef = useRef(nodeClickCallback);
 	const app = useApp();
 
 	// Cluster state refs (accessed inside Cytoscape event handlers)
@@ -124,6 +131,9 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	const onClusterCollapsedRef = useRef<((communityId: string) => void) | undefined>(undefined);
 	const onClusterModeChangeRef = useRef<((isActive: boolean) => void) | undefined>(undefined);
 	const activeClusterHighlightRef = useRef<string | null>(null);
+	const expandedClusterNodeClickedRef = useRef(false);
+	const keepClusterGlowRef = useRef(false);
+	const activeClusterNodeRef = useRef<string | null>(null);
 
 	useEffect(() => {
 		// Save the current viewport for the OLD file before the ref updates.
@@ -134,6 +144,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		filePathRef.current = filePath;
 	}, [filePath]);
 	useEffect(() => { cachedNodeIdsRef.current = cachedNodeIds ?? new Set(); }, [cachedNodeIds]);
+	useEffect(() => { cachedClusterHubIdsRef.current = cachedClusterHubIds ?? new Set(); }, [cachedClusterHubIds]);
 	useEffect(() => { loadingClusterHubIdRef.current = loadingClusterHubId; }, [loadingClusterHubId]);
 	useEffect(() => { edgeClickCallbackRef.current = edgeClickCallback; });
 	useEffect(() => { onBackgroundClickRef.current = onBackgroundClick; });
@@ -141,6 +152,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	useEffect(() => { onClusterClickRef.current = onClusterClick; });
 	useEffect(() => { onClusterCollapsedRef.current = onClusterCollapsed; });
 	useEffect(() => { onClusterModeChangeRef.current = onClusterModeChange; });
+	useEffect(() => { nodeClickCallbackRef.current = nodeClickCallback; });
 	useEffect(() => { activeNodeIdRef.current = activeNodeId; }, [activeNodeId]);
 
 	app?.workspace.onLayoutReady(() => {
@@ -449,7 +461,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			if (entry.nodeIds.length <= 1) return;
 			const clusterNode = cyRef.current!.$id(`cluster_${communityId}`);
 			const hubId = entry.hubNodeId ?? "";
-			if (cachedNodeIdsRef.current.has(hubId)) clusterNode.addClass("has-summary");
+			if (cachedClusterHubIdsRef.current.has(hubId)) clusterNode.addClass("has-summary");
 			if (loadingClusterHubIdRef.current === hubId) clusterNode.addClass("loading-background");
 		});
 
@@ -467,7 +479,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 		onClusterModeChangeRef.current?.(true);
 	};
 
-	const expandCluster = (group: string) => {
+	const expandCluster = (group: string, skipHighlight = false) => {
 		if (!cyRef.current) return;
 		const entry = clusterGroupsRef.current.get(group);
 		if (!entry || entry.nodeIds.length <= 1) return;
@@ -546,6 +558,13 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 
 		expandedGroupsRef.current.add(group);
 		syncExpandedState();
+		if (!skipHighlight) {
+			activeClusterHighlightRef.current = group;
+			setActiveClusterHighlightId(group);
+			lockedHighlightIdRef.current = group;
+			setLockedHighlightId(group);
+			highlightClusterMembers(group);
+		}
 	};
 
 	const collapseCluster = (group: string) => {
@@ -633,7 +652,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 
 			// Restore visual state classes on the freshly created cluster node
 			const clusterNode = cyRef.current!.$id(`cluster_${group}`);
-			if (cachedNodeIdsRef.current.has(hubNodeId)) clusterNode.addClass("has-summary");
+			if (cachedClusterHubIdsRef.current.has(hubNodeId)) clusterNode.addClass("has-summary");
 			if (loadingClusterHubIdRef.current === hubNodeId) clusterNode.addClass("loading-background");
 		});
 
@@ -736,10 +755,10 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 	};
 
 	const syncExpandedState = () => {
-		const list: { communityId: string; label: string }[] = [];
+		const list: { communityId: string; label: string; nodeCount: number }[] = [];
 		expandedGroupsRef.current.forEach(communityId => {
 			const entry = clusterGroupsRef.current.get(communityId);
-			if (entry) list.push({ communityId, label: entry.label ?? communityId });
+			if (entry) list.push({ communityId, label: entry.label ?? communityId, nodeCount: entry.nodeIds.length });
 		});
 		setExpandedClusterList(list);
 		setExpandedCount(expandedGroupsRef.current.size);
@@ -836,6 +855,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				const communityId = nodeData.group as string;
 				const isDeselect = selectedClusterIdRef.current === communityId;
 				activeClusterHighlightRef.current = isDeselect ? null : communityId;
+				setActiveClusterHighlightId(isDeselect ? null : communityId);
 				setClusterHighlightTick(t => t + 1);
 				onClusterClickRef.current?.({
 					communityId,
@@ -864,18 +884,20 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				const clickedId = (event.target as cytoscape.NodeSingular).id();
 				for (const [communityId, entry] of clusterGroupsRef.current) {
 					if (expandedGroupsRef.current.has(communityId) && entry.nodeIds.includes(clickedId)) {
-						activeClusterHighlightRef.current = communityId;
-						setClusterHighlightTick(t => t + 1);
-						onClusterClickRef.current?.({
-							communityId,
-							memberIds: entry.nodeIds,
-							label: entry.label ?? communityId,
-							hubNodeId: entry.hubNodeId ?? entry.nodeIds[0],
-							expand: () => expandClusterRef.current(communityId),
-							collapse: () => collapseClusterRef.current(communityId),
-							alreadyExpanded: true,
-						});
-						return;
+						const isAlreadyHighlighted =
+							lockedHighlightIdRef.current === communityId ||
+							activeClusterHighlightRef.current === communityId;
+						if (isAlreadyHighlighted) {
+							activeClusterHighlightRef.current = communityId;
+							setActiveClusterHighlightId(communityId);
+							activeClusterNodeRef.current = clickedId;
+							expandedClusterNodeClickedRef.current = true;
+							keepClusterGlowRef.current = true;
+							lockedHighlightIdRef.current = communityId;
+							setLockedHighlightId(communityId);
+							onActiveNodeIdChangeRef.current?.(clickedId);
+							return;
+						}
 					}
 				}
 			}
@@ -884,7 +906,9 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				setSelected(path);
 				app?.workspace.openLinkText("", path);
 			}
+			expandedClusterNodeClickedRef.current = false;
 			activeClusterHighlightRef.current = null;
+			setActiveClusterHighlightId(null);
 			onActiveNodeIdChangeRef.current?.(event.target.id());
 		};
 		cyRef.current?.on("click", "node", handleNodeClick);
@@ -916,6 +940,20 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					excluded = excluded.union(activeNode).union(activeNode.connectedEdges()).union(activeNode.outgoers("node")).union(activeNode.incomers("node"));
 				}
 			}
+			const effectiveClusterIdForHover = lockedHighlightIdRef.current ??
+				(activeClusterHighlightRef.current && expandedGroupsRef.current.has(activeClusterHighlightRef.current)
+					? activeClusterHighlightRef.current : null);
+			if (effectiveClusterIdForHover) {
+				const entry = clusterGroupsRef.current.get(effectiveClusterIdForHover);
+				if (entry) {
+					entry.nodeIds.forEach(id => {
+						const memberNode = cyRef.current?.$id(id);
+						if (memberNode?.length && !memberNode.hidden()) {
+							excluded = excluded.union(memberNode).union(memberNode.connectedEdges());
+						}
+					});
+				}
+			}
 			cyRef.current?.elements().not(excluded).addClass("dimmed");
 		});
 		cyRef.current?.on("mouseout", "node", (event) => {
@@ -929,8 +967,20 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				node.incomers("node").removeClass("hover-neighbor-incoming");
 				cyRef.current?.elements().removeClass("dimmed");
 				cyRef.current?.nodes().removeClass("cluster-hover-highlight");
-				if (lockedHighlightIdRef.current) {
-					highlightClusterMembers(lockedHighlightIdRef.current);
+				const effectiveClusterId1 = lockedHighlightIdRef.current ??
+					(activeClusterHighlightRef.current && expandedGroupsRef.current.has(activeClusterHighlightRef.current)
+						? activeClusterHighlightRef.current : null);
+				if (effectiveClusterId1) {
+					highlightClusterMembers(effectiveClusterId1);
+					if (activeClusterNodeRef.current) {
+						const clusterNode = cyRef.current?.$id(activeClusterNodeRef.current);
+						if (clusterNode?.length && !clusterNode.hidden()) {
+							clusterNode.outgoers("edge").addClass("edge-active");
+							clusterNode.incomers("edge").addClass("edge-active-incoming");
+							clusterNode.outgoers("node").addClass("active-neighbor-outgoing");
+							clusterNode.incomers("node").addClass("active-neighbor-incoming");
+						}
+					}
 				} else if (activeNodeIdRef.current) {
 					const activeNode = cyRef.current?.$id(activeNodeIdRef.current);
 					if (activeNode?.length && !activeNode.hidden()) {
@@ -951,8 +1001,20 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 			cyRef.current?.elements().removeClass("dimmed");
 			cyRef.current?.nodes().removeClass("cluster-hover-highlight");
 			const currentActiveId = activeNodeIdRef.current;
-			if (lockedHighlightIdRef.current) {
-				highlightClusterMembers(lockedHighlightIdRef.current);
+			const effectiveClusterId2 = lockedHighlightIdRef.current ??
+				(activeClusterHighlightRef.current && expandedGroupsRef.current.has(activeClusterHighlightRef.current)
+					? activeClusterHighlightRef.current : null);
+			if (effectiveClusterId2) {
+				highlightClusterMembers(effectiveClusterId2);
+				if (activeClusterNodeRef.current) {
+					const clusterNode = cyRef.current?.$id(activeClusterNodeRef.current);
+					if (clusterNode?.length && !clusterNode.hidden()) {
+						clusterNode.outgoers("edge").addClass("edge-active");
+						clusterNode.incomers("edge").addClass("edge-active-incoming");
+						clusterNode.outgoers("node").addClass("active-neighbor-outgoing");
+						clusterNode.incomers("node").addClass("active-neighbor-incoming");
+					}
+				}
 			} else if (currentActiveId) {
 				const activeNode = cyRef.current?.$id(currentActiveId);
 				if (activeNode?.length && !activeNode.hidden()) {
@@ -965,6 +1027,17 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				}
 			} else if (selectedClusterIdRef.current) {
 				highlightClusterBubbleNeighbors(selectedClusterIdRef.current);
+			} else if (keepClusterGlowRef.current && activeClusterHighlightRef.current && expandedGroupsRef.current.has(activeClusterHighlightRef.current)) {
+				highlightClusterMembers(activeClusterHighlightRef.current);
+				if (activeClusterNodeRef.current) {
+					const clusterNode = cyRef.current?.$id(activeClusterNodeRef.current);
+					if (clusterNode?.length && !clusterNode.hidden()) {
+						clusterNode.outgoers("edge").addClass("edge-active");
+						clusterNode.incomers("edge").addClass("edge-active-incoming");
+						clusterNode.outgoers("node").addClass("active-neighbor-outgoing");
+						clusterNode.incomers("node").addClass("active-neighbor-incoming");
+					}
+				}
 			}
 		});
 		cyRef.current?.on("mouseover", "edge", (event) => {
@@ -1004,23 +1077,44 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					return;
 				}
 				cyRef.current?.edges().deselect();
-				activeClusterHighlightRef.current = null;
-				lockedHighlightIdRef.current = null;
-				setLockedHighlightId(null);
-				cyRef.current?.nodes().removeClass("cluster-hover-highlight");
-				cyRef.current?.elements().removeClass("dimmed");
-				cyRef.current?.nodes().removeClass("hover-neighbor-outgoing hover-neighbor-incoming");
-				cyRef.current?.edges().removeClass("hovered hovered-incoming");
-				onActiveNodeIdChangeRef.current?.(undefined);
-				onBackgroundClickRef.current?.();
-				if (selectedClusterIdRef.current) {
-					cyRef.current?.$id(`cluster_${selectedClusterIdRef.current}`).removeClass("cluster-selected");
-					selectedClusterIdRef.current = null;
+				const hasActiveClusterGlow = (cyRef.current?.nodes(".cluster-hover-highlight").length ?? 0) > 0;
+				const hasEdgeHighlights = (cyRef.current?.edges(".edge-active").length ?? 0) > 0;
+				if ((hasActiveClusterGlow || keepClusterGlowRef.current) && (hasEdgeHighlights || expandedClusterNodeClickedRef.current)) {
+					// Stage 1: clear edge/hover highlights only; cluster glow + dimming stay intact
+					keepClusterGlowRef.current = true;
+					expandedClusterNodeClickedRef.current = false;
+					activeClusterNodeRef.current = null;
+					lockedHighlightIdRef.current = null;
+					setLockedHighlightId(null);
+					cyRef.current?.edges().removeClass("edge-active edge-active-incoming hovered hovered-incoming");
+					cyRef.current?.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
+					cyRef.current?.nodes().removeClass("hover-neighbor-outgoing hover-neighbor-incoming");
+					cyRef.current?.nodes().deselect();
+					onActiveNodeIdChangeRef.current?.(undefined);
+					onBackgroundClickRef.current?.();
+					cyRef.current?.nodes().filter((node) => node.data().priority === 1).unselectify();
+				} else {
+					// Stage 2 (or no expanded cluster active): full clear
+					keepClusterGlowRef.current = false;
+					activeClusterHighlightRef.current = null;
+					setActiveClusterHighlightId(null);
+					activeClusterNodeRef.current = null;
+					expandedClusterNodeClickedRef.current = false;
+					lockedHighlightIdRef.current = null;
+					setLockedHighlightId(null);
+					cyRef.current?.nodes().removeClass("cluster-hover-highlight");
+					cyRef.current?.elements().removeClass("dimmed");
+					cyRef.current?.edges().removeClass("edge-active edge-active-incoming hovered hovered-incoming");
+					cyRef.current?.nodes().removeClass("active-neighbor-outgoing active-neighbor-incoming");
+					cyRef.current?.nodes().removeClass("hover-neighbor-outgoing hover-neighbor-incoming");
+					onActiveNodeIdChangeRef.current?.(undefined);
+					onBackgroundClickRef.current?.();
+					if (selectedClusterIdRef.current) {
+						cyRef.current?.$id(`cluster_${selectedClusterIdRef.current}`).removeClass("cluster-selected");
+						selectedClusterIdRef.current = null;
+					}
+					cyRef.current?.nodes().filter((node) => node.data().priority === 1).unselectify();
 				}
-				cyRef.current
-					?.nodes()
-					.filter((node) => node.data().priority === 1)
-					.unselectify();
 			} else {
 				cyRef.current
 					?.nodes()
@@ -1149,7 +1243,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					if (savedExpanded) {
 						try {
 							const expandedIds: string[] = JSON.parse(savedExpanded);
-							expandedIds.forEach(communityId => expandCluster(communityId));
+							expandedIds.forEach(communityId => expandCluster(communityId, true));
 						} catch { /* ignore corrupt data */ }
 					}
 				}
@@ -1193,7 +1287,7 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				cyRef.current?.nodes().forEach(node => {
 					if (node.data("isCluster")) {
 						const hubId = node.data("hubNodeId") as string;
-						if (cachedNodeIds?.has(hubId)) node.addClass("has-summary");
+						if (cachedClusterHubIds?.has(hubId)) node.addClass("has-summary");
 						else node.removeClass("has-summary");
 						return;
 					}
@@ -1205,7 +1299,15 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				});
 			});
 		}
-	}, [cachedNodeIds, data]);
+	}, [cachedNodeIds, cachedClusterHubIds, data]);
+
+	useEffect(() => {
+		if (!lastCachedClusterHubId || !cyRef.current) return;
+		const clusterNode = cyRef.current.nodes().filter(n =>
+			Boolean(n.data("isCluster")) && n.data("hubNodeId") === lastCachedClusterHubId
+		).first();
+		if (clusterNode.length) clusterNode.addClass("has-summary");
+	}, [lastCachedClusterHubId]);
 
 	useEffect(() => {
 		if (!cyRef.current) return;
@@ -1286,11 +1388,58 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 						.not(activeNode.outgoers("node"))
 						.not(activeNode.incomers("node"))
 						.addClass("dimmed");
+					if (activeClusterHighlightRef.current && expandedGroupsRef.current.has(activeClusterHighlightRef.current)) {
+						const clusterEntry = clusterGroupsRef.current.get(activeClusterHighlightRef.current);
+						if (clusterEntry) {
+							const memberIds = new Set(clusterEntry.nodeIds);
+							const hubCounts = new Map<string, number>();
+							cyRef.current.edges().forEach(edge => {
+								const srcId = edge.source().id();
+								const tgtId = edge.target().id();
+								if (memberIds.has(srcId) && !memberIds.has(tgtId))
+									hubCounts.set(tgtId, (hubCounts.get(tgtId) ?? 0) + 1);
+								else if (memberIds.has(tgtId) && !memberIds.has(srcId))
+									hubCounts.set(srcId, (hubCounts.get(srcId) ?? 0) + 1);
+							});
+							const hubThreshold = Math.max(2, Math.ceil(clusterEntry.nodeIds.length * 0.5));
+							hubCounts.forEach((count, nodeId) => {
+								if (count >= hubThreshold) memberIds.add(nodeId);
+							});
+							clusterEntry.nodeIds.forEach(id => {
+								const n = cyRef.current?.$id(id);
+								if (n?.length) {
+									n.removeClass("dimmed");
+									n.addClass("cluster-hover-highlight");
+									n.connectedEdges().filter(e =>
+										memberIds.has(e.source().id()) && memberIds.has(e.target().id())
+									).removeClass("dimmed");
+								}
+							});
+							memberIds.forEach(id => {
+								if (!clusterEntry.nodeIds.includes(id)) {
+									cyRef.current?.$id(id).removeClass("dimmed");
+								}
+							});
+						}
+					}
 				}
 			} else if (activeClusterHighlightRef.current) {
+				activeNodeIdRef.current = undefined;
+				cyRef.current.nodes().deselect();
 				const cId = activeClusterHighlightRef.current;
 				if (expandedGroupsRef.current.has(cId)) {
 					highlightClusterMembers(cId);
+					if (activeClusterNodeRef.current) {
+						const clusterNode = cyRef.current.$id(activeClusterNodeRef.current);
+						if (clusterNode.length && !clusterNode.hidden()) {
+							clusterNode.outgoers("edge").addClass("edge-active");
+							clusterNode.incomers("edge").addClass("edge-active-incoming");
+							clusterNode.outgoers("node").addClass("active-neighbor-outgoing");
+							clusterNode.incomers("node").addClass("active-neighbor-incoming");
+							clusterNode.selectify();
+							clusterNode.select();
+						}
+					}
 				} else if (cyRef.current.$id(`cluster_${cId}`).length) {
 					highlightClusterBubbleNeighbors(cId);
 				}
@@ -1312,6 +1461,10 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 				<ClusterToggleButton
 					onClick={handleClusterToggle}
 					$active={isClustered}
+					$clusterActive={
+					!!(lockedHighlightId || activeClusterHighlightId) &&
+					expandedClusterList.some(c => c.communityId === (lockedHighlightId || activeClusterHighlightId))
+				}
 					title={isClustered
 					? (expandedCount > 0 ? "Manage clusters" : "Expand all clusters")
 					: "Cluster nodes by type"}
@@ -1329,29 +1482,37 @@ const Graph = forwardRef<{ clearNodeHighlight: () => void; resizeCy: () => void 
 					{expandedClusterList.length > 0 && (
 						<>
 							<ClusterMenuLabel>Expanded clusters</ClusterMenuLabel>
-							{expandedClusterList.map(({ communityId, label }) => (
+							{expandedClusterList.map(({ communityId, label, nodeCount }) => (
 								<ClusterMenuRow
 									key={communityId}
 									onMouseEnter={() => highlightClusterMembers(communityId)}
 									onMouseLeave={() => {
-										if (lockedHighlightIdRef.current) {
-											highlightClusterMembers(lockedHighlightIdRef.current);
+										const effectiveId = lockedHighlightIdRef.current ?? activeClusterHighlightRef.current;
+										if (effectiveId) {
+											highlightClusterMembers(effectiveId);
 										} else {
 											clearClusterHighlight();
 										}
 									}}
 								>
-									<ClusterMenuRowLabel $isLocked={lockedHighlightId === communityId} title={label} onClick={() => {
-										if (lockedHighlightIdRef.current === communityId) {
+									<ClusterMenuRowLabel $isLocked={lockedHighlightId === communityId || activeClusterHighlightId === communityId} title={`${label} (${nodeCount})`} onClick={() => {
+										if (lockedHighlightIdRef.current === communityId || activeClusterHighlightRef.current === communityId) {
 											lockedHighlightIdRef.current = null;
 											setLockedHighlightId(null);
+											activeClusterHighlightRef.current = null;
+											setActiveClusterHighlightId(null);
+											activeClusterNodeRef.current = null;
+											expandedClusterNodeClickedRef.current = false;
+											keepClusterGlowRef.current = false;
+											cyRef.current?.nodes().deselect();
 											clearClusterHighlight();
 										} else {
 											lockedHighlightIdRef.current = communityId;
 											setLockedHighlightId(communityId);
+											setActiveClusterHighlightId(null);
 											highlightClusterMembers(communityId);
 										}
-									}}>{label}</ClusterMenuRowLabel>
+									}}>{label} ({nodeCount})</ClusterMenuRowLabel>
 									<ClusterMenuReClusterBtn onClick={() => { if (lockedHighlightIdRef.current === communityId) { lockedHighlightIdRef.current = null; setLockedHighlightId(null); } clearClusterHighlight(); collapseCluster(communityId); }}>
 										Re-Cluster
 									</ClusterMenuReClusterBtn>

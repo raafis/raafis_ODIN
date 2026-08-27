@@ -127,11 +127,14 @@ const Main: React.FC = (): React.JSX.Element => {
 	const [clusterSummary, setClusterSummary] = useState<string | null>(null);
 	const [clusterSummaryLoading, setClusterSummaryLoading] = useState(false);
 	const [clusterLoadingHubId, setClusterLoadingHubId] = useState<string | null>(null);
+	const [lastCachedClusterHubId, setLastCachedClusterHubId] = useState<string | null>(null);
+	const [cachedClusterHubIds, setCachedClusterHubIds] = useState<Set<string>>(new Set());
 	const [clusterExpanded, setClusterExpanded] = useState(false);
 	const [clusterCopied, setClusterCopied] = useState(false);
 	const clusterSummaryAbortRef = useRef<AbortController | null>(null);
 	const activeClusterRef = useRef<ClusterClickInfo | null>(null);
 	useEffect(() => { activeClusterRef.current = activeCluster; }, [activeCluster]);
+	const highlightTokenRef = useRef(0);
 	const clusterExpandedRef = useRef(false);
 	useEffect(() => { clusterExpandedRef.current = clusterExpanded; }, [clusterExpanded]);
 	const clusterLoadingHubIdRef = useRef<string | null>(null);
@@ -178,6 +181,7 @@ const Main: React.FC = (): React.JSX.Element => {
 	const onNodeClickCallback = async (node: NodeSingular) => {
 		if (node.data().isChatNode) return;
 		if (node.data().id?.startsWith('preview_')) return;
+		++highlightTokenRef.current;
 		selectionChangeCleanupRef.current?.();
 		selectionChangeCleanupRef.current = null;
 		lastHighlightedEditorRef.current = null;
@@ -207,7 +211,28 @@ const Main: React.FC = (): React.JSX.Element => {
 		let ignoreResults = false;
 		{
 			setDisabled(true);
-			const active = selectedFile;
+
+			const nodeFilePath = node.data().path as string | undefined;
+			console.log('[ODIN] onNodeClickCallback — nodeId:', nodeId, 'nodeFilePath:', nodeFilePath);
+
+			let editorContent = "";
+			if (nodeFilePath && app) {
+				const vaultFile = app.vault.getAbstractFileByPath(nodeFilePath);
+				console.log('[ODIN] vaultFile found:', !!vaultFile, 'instanceof TFile:', vaultFile instanceof TFile);
+				if (vaultFile instanceof TFile) {
+					try {
+						editorContent = await app.vault.cachedRead(vaultFile);
+						console.log('[ODIN] editorContent length:', editorContent.length);
+					} catch (e) {
+						console.log('[ODIN] cachedRead error:', e);
+					}
+				}
+			}
+			if (!editorContent) {
+				editorContent = app?.workspace.activeEditor?.editor?.getValue() || "";
+				console.log('[ODIN] fallback editorContent length:', editorContent.length);
+			}
+
 			const fetchBody = {
 				repo: {
 					path: root,
@@ -216,31 +241,65 @@ const Main: React.FC = (): React.JSX.Element => {
 				id: nodeId,
 			};
 
-			await fetchData(
-				"http://localhost:8000/knowledge_base/notes/node_to_sentences",
-				fetchBody
-			)
-				.then((data) => {
-					const selections: Selection[] = [];
-					data.forEach((element: Sentence) => {
-						const pos = getEditorPosition(
-							app?.workspace.activeEditor?.editor?.getValue() || "",
-							element.content
-						);
-						if (pos) selections.push(pos);
-					});
+			try {
+				const data = await fetchData(
+					"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+					fetchBody
+				);
+				console.log('[ODIN] API returned', data?.length, 'sentences:', JSON.stringify(data?.slice(0, 2)));
 
-					if (active === selectedFile && !ignoreResults && selections.length > 0) {
-						const ed = app?.workspace.activeEditor?.editor;
+				const selections: Selection[] = [];
+				data.forEach((element: Sentence) => {
+					const pos = getEditorPosition(editorContent, element.content);
+					if (pos) selections.push(pos);
+				});
+				console.log('[ODIN] selections computed:', selections.length, 'from', data?.length, 'sentences');
+
+				if (!ignoreResults) {
+					if (selections.length > 0) {
+						if (nodeFilePath) {
+							const currentPath = app?.workspace.activeEditor?.file?.path || "";
+							console.log('[ODIN] currentPath:', currentPath, 'needsNav:', currentPath !== nodeFilePath);
+							if (currentPath !== nodeFilePath) {
+								await app?.workspace.openLinkText(
+									"", nodeFilePath.split(/[\\/]/).pop() || nodeFilePath
+								);
+							}
+						}
+						let ed = app?.workspace.activeEditor?.editor;
+						if (!ed) {
+							// Cytoscape canvas click can blur activeEditor — fall back to last known editor
+							ed = lastHighlightedEditorRef.current ?? null;
+						}
+						if (!ed && app) {
+							// Last resort: find any open markdown leaf whose file matches nodeFilePath or capturedFile
+							const targetPath = nodeFilePath || capturedFile;
+							app.workspace.iterateAllLeaves((leaf: any) => {
+								if (!ed && leaf.view?.getViewType?.() === 'markdown' &&
+									(!targetPath || leaf.view?.file?.path === targetPath)) {
+									ed = leaf.view?.editor;
+								}
+							});
+						}
+						console.log('[ODIN] editor found:', !!ed, '— setting', selections.length, 'selections');
 						if (ed) {
 							lastHighlightedEditorRef.current = ed;
 							ed.setSelections(selections);
 						}
+					} else {
+						console.log('[ODIN] no selections — resetting cursor');
+						const ed = app?.workspace.activeEditor?.editor;
+						if (ed) {
+							const cursor = ed.getCursor("from");
+							try { ed.setSelections([{ anchor: cursor, head: cursor }]); } catch {}
+						}
 					}
-				})
-				.catch(() => {
-					new Notice(Messages.fetchFailed);
-				});
+				}
+			} catch (e) {
+				console.log('[ODIN] fetch error:', e);
+				new Notice(Messages.fetchFailed);
+			}
+
 			setDisabled(false);
 		}
 
@@ -374,9 +433,9 @@ const Main: React.FC = (): React.JSX.Element => {
 		setClusterCopied(false);
 	};
 
-	const fetchClusterSummary = async (hubNodeId: string, regenerate = false) => {
+	const fetchClusterSummary = async (hubNodeId: string, memberIds: string[], regenerate = false) => {
 		const capturedFile = selectedFile;
-		const cacheKey = `${capturedFile}::${hubNodeId}`;
+		const cacheKey = `${capturedFile}::cluster::${hubNodeId}`;
 		if (!regenerate && nodeSummaryCacheRef.current.has(cacheKey)) {
 			setClusterSummary(nodeSummaryCacheRef.current.get(cacheKey) ?? null);
 			return;
@@ -391,19 +450,32 @@ const Main: React.FC = (): React.JSX.Element => {
 		setClusterLoadingHubId(hubNodeId);
 		setClusterSummary(null);
 		try {
-			const result = await fetchData(
-				"http://localhost:8000/knowledge_base/notes/node_summary",
-				{ repo: { path: root, type: "Notes" }, id: hubNodeId, regenerate },
-				undefined, undefined, controller.signal
+			const results = await Promise.all(
+				memberIds.map(id =>
+					fetchData(
+						"http://localhost:8000/knowledge_base/notes/node_summary",
+						{ repo: { path: root, type: "Notes" }, id, regenerate: true },
+						undefined, undefined, controller.signal
+					).catch(() => null)
+				)
 			);
-			const content = result?.content ?? null;
+			const parts = results
+				.map((result, i) => {
+					const content = result?.content;
+					if (!content) return null;
+					const nodeLabel = data.nodes.find(n => n.data.id === memberIds[i])?.data.label ?? memberIds[i];
+					return `${nodeLabel}:\n${content}`;
+				})
+				.filter(Boolean) as string[];
+			const combined = parts.join('\n\n') || null;
 			clusterLoadingHubIdRef.current = null;
 			if (!controller.signal.aborted) {
-				nodeSummaryCacheRef.current.set(cacheKey, content);
-				setCachedNodeIds(prev => new Set([...prev, hubNodeId]));
+				nodeSummaryCacheRef.current.set(cacheKey, combined);
+				setCachedClusterHubIds(prev => new Set([...prev, hubNodeId]));
+				setLastCachedClusterHubId(hubNodeId);
 				setClusterLoadingHubId(null);
 				if (activeClusterRef.current?.hubNodeId === hubNodeId) {
-					setClusterSummary(content);
+					setClusterSummary(combined);
 					setClusterSummaryLoading(false);
 				}
 			}
@@ -427,18 +499,18 @@ const Main: React.FC = (): React.JSX.Element => {
 
 	const handleRegenerateClusterSummary = () => {
 		if (!activeCluster) return;
-		const cacheKey = `${selectedFile}::${activeCluster.hubNodeId}`;
+		const cacheKey = `${selectedFile}::cluster::${activeCluster.hubNodeId}`;
 		nodeSummaryCacheRef.current.delete(cacheKey);
-		setCachedNodeIds(prev => { const next = new Set(prev); next.delete(activeCluster.hubNodeId); return next; });
+		setCachedClusterHubIds(prev => { const next = new Set(prev); next.delete(activeCluster.hubNodeId); return next; });
 		setClusterSummary(null);
-		fetchClusterSummary(activeCluster.hubNodeId, true);
+		fetchClusterSummary(activeCluster.hubNodeId, activeCluster.memberIds, true);
 	};
 
 	const handleClearClusterSummary = () => {
 		if (activeCluster) {
-			const cacheKey = `${selectedFile}::${activeCluster.hubNodeId}`;
+			const cacheKey = `${selectedFile}::cluster::${activeCluster.hubNodeId}`;
 			nodeSummaryCacheRef.current.delete(cacheKey);
-			setCachedNodeIds(prev => { const next = new Set(prev); next.delete(activeCluster.hubNodeId); return next; });
+			setCachedClusterHubIds(prev => { const next = new Set(prev); next.delete(activeCluster.hubNodeId); return next; });
 		}
 		setClusterSummary(null);
 	};
@@ -448,6 +520,7 @@ const Main: React.FC = (): React.JSX.Element => {
 			clearActiveCluster();
 			return;
 		}
+		const myToken = ++highlightTokenRef.current;
 		setActiveCluster(info);
 		setClusterExpanded(info.alreadyExpanded ?? false);
 		setClusterCopied(false);
@@ -455,7 +528,7 @@ const Main: React.FC = (): React.JSX.Element => {
 		setSummary(null);
 		setSummaryLoading(false);
 		setSideTab("summary");
-		const cacheKey = `${selectedFile}::${info.hubNodeId}`;
+		const cacheKey = `${selectedFile}::cluster::${info.hubNodeId}`;
 		const cached = nodeSummaryCacheRef.current.has(cacheKey)
 			? (nodeSummaryCacheRef.current.get(cacheKey) ?? null)
 			: null;
@@ -468,15 +541,19 @@ const Main: React.FC = (): React.JSX.Element => {
 		await app?.workspace.openLinkText("", hubNodePath ?? capturedFile);
 		const editorContent = app?.workspace.activeEditor?.editor?.getValue() || "";
 		try {
-			const results = await fetchData(
-				"http://localhost:8000/knowledge_base/notes/node_to_sentences",
-				{ repo: { path: root, type: "Notes" }, id: info.hubNodeId }
-			).catch(() => [] as Sentence[]);
-			const matched = (results as Sentence[]).filter(el => Boolean(el.content));
-			if (matched.length > 0) {
-				const ed = app?.workspace.activeEditor?.editor;
-				if (ed) {
-					const selections = matched
+			const ed = app?.workspace.activeEditor?.editor;
+			if (ed) {
+				const fetchResults = await Promise.all(
+					info.memberIds.map(id =>
+						fetchData(
+							"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+							{ repo: { path: root, type: "Notes" }, id }
+						).catch(() => [] as Sentence[])
+					)
+				);
+				const allSentences = (fetchResults.flat() as Sentence[]).filter(el => Boolean(el.content));
+				if (allSentences.length > 0 && highlightTokenRef.current === myToken) {
+					const selections = allSentences
 						.map(el => getEditorPosition(editorContent, el.content))
 						.filter((s): s is Selection => s !== null);
 					if (selections.length > 0) {
@@ -1078,8 +1155,10 @@ const Main: React.FC = (): React.JSX.Element => {
 						activeNodeId={activeNodeId}
 						onActiveNodeIdChange={handleActiveNodeIdChange}
 						cachedNodeIds={cachedNodeIds}
+						cachedClusterHubIds={cachedClusterHubIds}
 						loadingNodeId={backgroundLoadingNodeId}
 						loadingClusterHubId={clusterLoadingHubId ?? undefined}
+						lastCachedClusterHubId={lastCachedClusterHubId ?? undefined}
 						nodeClickCallback={onNodeClickCallback}
 						edgeClickCallback={onEdgeClickCallback}
 						chatHighlightedNodeIds={chatHighlightedNodeIds}
@@ -1151,11 +1230,13 @@ const Main: React.FC = (): React.JSX.Element => {
 										</S.ButtonRow>
 									)}
 									{!clusterSummaryLoading && !clusterSummary && (
-										<S.GetSummaryButton onClick={() => fetchClusterSummary(activeCluster.hubNodeId)}>Get Summary</S.GetSummaryButton>
+										<S.GetSummaryButton onClick={() => fetchClusterSummary(activeCluster.hubNodeId, activeCluster.memberIds)}>Get Summary</S.GetSummaryButton>
 									)}
 									{!clusterExpanded ? (
-										<S.ExpandClusterButton onClick={() => {
+										<S.ExpandClusterButton onClick={async () => {
 											const hubId = activeCluster.hubNodeId;
+											const hubNodePath = (data.nodes.find(n => n.data.id === hubId)?.data.path as string | undefined)
+												?.split(/(\\|\/)/g).pop();
 											activeCluster.expand();
 											clearActiveCluster();
 											setActiveNodeId(hubId);
@@ -1167,6 +1248,27 @@ const Main: React.FC = (): React.JSX.Element => {
 											}
 											setSummaryLoading(false);
 											activeNodePerFileRef.current.set(selectedFile, { nodeId: hubId, summary: null, loading: false });
+											try {
+												await app?.workspace.openLinkText("", hubNodePath ?? selectedFile);
+												const editorContent = app?.workspace.activeEditor?.editor?.getValue() || "";
+												const ed = app?.workspace.activeEditor?.editor ?? lastHighlightedEditorRef.current ?? null;
+												if (ed) {
+													const results = await fetchData(
+														"http://localhost:8000/knowledge_base/notes/node_to_sentences",
+														{ repo: { path: root, type: "Notes" }, id: hubId }
+													).catch(() => [] as Sentence[]);
+													const matched = (results as Sentence[]).filter(el => Boolean(el.content));
+													if (matched.length > 0) {
+														const selections = matched
+															.map(el => getEditorPosition(editorContent, el.content))
+															.filter((s): s is Selection => s !== null);
+														if (selections.length > 0) {
+															lastHighlightedEditorRef.current = ed;
+															ed.setSelections(selections);
+														}
+													}
+												}
+											} catch {}
 										}}>
 											Expand Cluster
 										</S.ExpandClusterButton>

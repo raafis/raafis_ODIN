@@ -28,7 +28,7 @@ export const GraphOuter = styled.div`
     height: 100%;
 `;
 
-export const ClusterToggleButton = styled.button<{ $active: boolean }>`
+export const ClusterToggleButton = styled.button<{ $active: boolean; $clusterActive?: boolean }>`
     && {
         position: absolute;
         top: 8px;
@@ -36,9 +36,9 @@ export const ClusterToggleButton = styled.button<{ $active: boolean }>`
         width: 28px;
         height: 28px;
         border-radius: var(--radius-s);
-        border: 1px solid ${p => p.$active ? "var(--color-accent-1)" : "var(--background-modifier-border)"};
-        background: ${p => p.$active ? "var(--color-accent-1)" : "var(--color-base-20)"};
-        color: ${p => p.$active ? "var(--color-base-90)" : "var(--text-muted)"};
+        border: 1px solid ${p => p.$clusterActive ? "#f59e0b" : p.$active ? "var(--color-accent-1)" : "var(--background-modifier-border)"};
+        background: ${p => p.$clusterActive ? "#f59e0b" : p.$active ? "var(--color-accent-1)" : "var(--color-base-20)"};
+        color: ${p => (p.$active || p.$clusterActive) ? "var(--color-base-90)" : "var(--text-muted)"};
         cursor: pointer;
         box-shadow: none;
         display: flex;
@@ -49,8 +49,8 @@ export const ClusterToggleButton = styled.button<{ $active: boolean }>`
         transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
     &&:hover {
-        border-color: var(--color-accent-1);
-        color: ${p => p.$active ? "var(--color-base-90)" : "var(--text-normal)"};
+        border-color: ${p => p.$clusterActive ? "#f59e0b" : "var(--color-accent-1)"};
+        color: ${p => (p.$active || p.$clusterActive) ? "var(--color-base-90)" : "var(--text-normal)"};
     }
 `;
 
@@ -92,6 +92,8 @@ export const ClusterMenuDropdown = styled.div`
     border-radius: var(--radius-s);
     min-width: 200px;
     max-width: 280px;
+    max-height: 60vh;
+    overflow-y: auto;
     padding: 4px 0;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 `;
